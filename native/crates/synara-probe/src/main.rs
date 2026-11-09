@@ -50,6 +50,15 @@ struct Cli {
     command: Command,
 }
 
+/// `synara-probe` under the system temp dir, so the default suits the
+/// platform the probe runs on (the usual case: a local server).
+fn default_workspace() -> String {
+    std::env::temp_dir()
+        .join("synara-probe")
+        .to_string_lossy()
+        .into_owned()
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Negotiate, connect, and load the shell snapshot.
@@ -57,7 +66,7 @@ enum Command {
     /// `check`, then create a project and thread and load the thread snapshot.
     Smoke {
         /// Workspace root for the throwaway project (created if missing).
-        #[arg(long, default_value = "/tmp/synara-probe")]
+        #[arg(long, default_value_t = default_workspace())]
         workspace: String,
         #[arg(long, default_value = "codex")]
         provider: String,
@@ -66,7 +75,7 @@ enum Command {
     },
     /// Drive `synara-session`: create, open, send, force a reconnect, resume.
     Session {
-        #[arg(long, default_value = "/tmp/synara-probe")]
+        #[arg(long, default_value_t = default_workspace())]
         workspace: String,
         #[arg(long, default_value = "codex")]
         provider: String,
