@@ -210,6 +210,12 @@ These are behavior contracts. The reference implementations are cited; the nativ
 
 Every user action is `orchestration.dispatchCommand` with a `ClientOrchestrationCommand` (discriminated on `type`), answered with `DispatchResult { sequence }`. The client never applies its own command optimistically past what the web client does: it shows the pending user message, then reconciles when the matching `thread.message-sent` arrives with the same `messageId`. A lost turn-start acknowledgement is settled with `orchestration.settleTurnDispatch`, never by resending.
 
+### 5.2.3 Approvals and questions
+
+`synara-sync/src/pending.rs` keeps `thread.pendingInteractions` current between snapshots, mirroring `reconcilePendingInteractionsFromActivity` and `markInteractionResponding` in `apps/web/src/storeEventReducer.ts`: `*.requested` activities upsert a `pending` entry, `*.resolved` removes it, `provider.*.respond.failed` moves a matching `responding` entry to `retryable`/`uncertain` (or `confirmed` for stale callbacks), and `thread.approval-response-requested`/`thread.user-input-response-requested` claim it as `responding`. One gap: the web also reclaims a `responding` entry after a 30 s grace; the native client waits for the next snapshot.
+
+`synara-app/src/pending.rs` ports `derivePendingApprovals`/`derivePendingUserInputs` (activity replay by `requestId` + `lifecycleGeneration`, stale-failure close, then only `pending`/`retryable` settlements stay open; the aggregate-only fallback is not needed). The oldest open approval shows above the composer with the web's prompt and actions (Approve once, Always allow this session when `sessionApprovalAvailable` is not `false`, Decline, Cancel turn) and answers with `thread.approval.respond`. Questions show when no approval is open: option toggles (multi-select toggles, single-select replaces), typed text in the composer answers the first unanswered question, a lone single-choice question sends on click, and Submit sends `thread.user-input.respond` once every question has an answer (`buildPendingUserInputAnswers`). Computer/device consent scopes and permission-profile detail are not yet ported.
+
 ### 5.3 Store and rendering
 
 - Each thread, message and turn is a GPUI `Entity`. Views observe the narrowest entity they render, so a streaming token notifies one message view, not the transcript.
