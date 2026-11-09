@@ -320,6 +320,22 @@ Port `apps/desktop/src/main.ts` and `apps/server/src/desktopParentLifetime.ts` e
 - Restart backoff `500 ms × 2^n`, capped at 10 s, reset after a stable run.
 - Clean shutdown: `POST /api/desktop/shutdown` with `Authorization: Bearer <token>`, wait, then SIGTERM, then SIGKILL (Windows: job object terminate). Process creation and teardown go through one Rust module that mirrors `packages/shared/src/platformProcess.ts`, including Windows quoting. Do not report cleanup as done unless the child's exit was observed.
 
+**Implemented so far (`native/crates/synara-supervisor`, source-checkout path only):**
+
+| Behavior                                                                                                                                                                            | Status                                            |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Env `SYNARA_PORT/HOST/HOME/AUTH_TOKEN`, `SYNARA_NO_BROWSER=1`, `SYNARA_DESKTOP_PARENT_STDIN=1`; inherited copies and `SYNARA_DESKTOP_SHUTDOWN_TOKEN`/`ELECTRON_RUN_AS_NODE` removed | done                                              |
+| stdin held outside `tokio::process::Child` (its `wait()` closes stdin, which the server reads as owner loss)                                                                        | done, covered by a test                           |
+| Readiness `GET /health` → `startupReady: true`; a spawn never resets the breaker, readiness does                                                                                    | done                                              |
+| Backoff 500 ms doubling to 10 s; give up after 5 consecutive failed starts; `restart()` clears the breaker                                                                          | done                                              |
+| 8 KiB output tail; give-up summary from the last `error` line; output drained (≤1 s) before summarising                                                                             | done                                              |
+| Migration-recovery marker (`userdata/state.sqlite.migration-recovery.json`) blocks the start                                                                                        | done                                              |
+| Adopt a healthy server on a fixed port instead of spawning                                                                                                                          | done (not restarted or stopped by the supervisor) |
+| Own process group on Unix; after the stop timeout, SIGTERM then SIGKILL the whole group so provider children are not orphaned                                                       | done, covered by a test                           |
+| Bundled Node entry, fd3 capability pipe, `UV_THREADPOOL_SIZE`, `/api/desktop/shutdown`, Windows job objects                                                                         | not started                                       |
+
+**Known server issue (reported, not changed here):** when stdin closes while a Codex provider session is running, the server logs `Desktop owner connection closed; shutting down backend` but neither exits nor hits its own 20 s owner-lost watchdog within 25 s, so the supervisor has to escalate to the process group. With no provider session it exits in about a second. Reproduce with `synara-probe --spawn <repo> session` (hangs) and `--spawn <repo> smoke` (clean).
+
 ### 7.2 Single instance and data homes
 
 - One instance per channel, enforced by a lock in the data home. A second launch forwards its deep link and exits.
