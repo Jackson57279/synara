@@ -557,7 +557,23 @@ GPUI builds are heavy (a cold debug build of gpui-kit is several GB of `target/`
 
 The box is a development convenience, not a dependency: every script also runs on a normal Linux machine. `CARGO_TARGET_DIR` lives on the box's persistent `/data` disk so a paused box resumes with a warm cache.
 
-## 15. References
+## 15. Packaging and benchmark
+
+`native/scripts/build-appimage.sh` packages the client as an AppImage. Build the binary in a glibc 2.36 container (`rust:bookworm` plus the X11/Wayland/Vulkan dev packages); the script refuses binaries that need a newer glibc. The AppImage holds only the client: run it with `--spawn <checkout>` (needs `bun`), `--url`/`--token`, or `--instabox`.
+
+`native/scripts/bench-clients.sh` compares clients under Xvfb on a sandbox. Each run starts from a fresh copy of the same seeded `SYNARA_HOME` (7 projects/threads), with caches dropped. Results from 2026-11-09 on `synara-native` (4 vCPU, 8 GiB, llvmpipe, no GPU), 5 runs each, medians:
+
+| Client                            | Package          | Window mapped | Thread list settled | Client PSS | Client + server PSS | Client idle CPU | Processes / threads |
+| --------------------------------- | ---------------- | ------------- | ------------------- | ---------- | ------------------- | --------------- | ------------------- |
+| Electron 1.1.0 (`main` 402ed78ad) | 346 MiB AppImage | 1356 ms       | 4205 ms             | 565 MiB    | 1385 MiB            | 30.6%           | 6 / 82              |
+| Native, `--spawn` (bun server)    | 17 MiB AppImage  | 512 ms        | 2204 ms             | 133 MiB    | 361 MiB             | 0.6%            | 1 / 29              |
+| Native, `--url` (warm server)     | 17 MiB AppImage  | 320 ms        | 443 ms              | 130 MiB    | n/a                 | 0.6%            | 1 / 29              |
+
+Caveats: the native client implements a subset of the web UI; Electron's idle CPU is mostly its animated home background under software rendering; the two servers differ (Electron runs the bundled build on Electron-as-Node, native `--spawn` runs `apps/server` source on bun); readiness is screenshot-sampled (about ±150 ms).
+
+The Electron artifact from `main` crashed at launch until its staged `betterwright` package was repaired: in the hoisted staged install `patches/betterwright@2.7.3.patch` applies at an offset and nests the `./guard-proxy` export inside `./capture`, and the staged-patch check only looks for the added lines.
+
+## 16. References
 
 - Protocol: `packages/contracts/src/rpc.ts`, `orchestration.ts`, `wsCompatibility.ts`, `hostAuth.ts`; `apps/server/src/wsRpc.ts`, `wsSnapshotLiveStream.ts`.
 - Reference client: `apps/web/src/wsTransport.ts`, `routes/__root.tsx`, `components/chat/useChatTranscriptScroll.ts`, `apps/web/src/chat-scroll.ts`, `lib/disclosureMotion.ts`, `hooks/useAppTypography.ts`.
