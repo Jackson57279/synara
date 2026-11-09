@@ -87,6 +87,10 @@ threads() {
 hz=$(getconf CLK_TCK)
 echo "label,run,map_ms,ready_ms,client_procs,client_threads,client_pss_mib,total_pss_mib,client_idle_cpu_pct"
 for run in $(seq 1 "$runs"); do
+  if xdotool search --name Synara >/dev/null 2>&1; then
+    echo "a Synara window is already open on $display; close it first" >&2
+    exit 1
+  fi
   export BENCH_HOME
   BENCH_HOME="$(mktemp -d /tmp/bench-home.XXXX)"
   cp -a "$seed"/. "$BENCH_HOME"/
@@ -100,9 +104,11 @@ for run in $(seq 1 "$runs"); do
   map_ms=NA
   deadline=$((t0 + timeout_s * 1000))
   while (( $(now_ms) < deadline )); do
-    if xdotool search --onlyvisible --name Synara >/dev/null 2>&1; then
-      map_ms=$(( $(now_ms) - t0 )); break
-    fi
+    tree=" $(descendants "$root" | tr '\n' ' ') "
+    for w in $(xdotool search --onlyvisible --name Synara 2>/dev/null); do
+      [[ "$tree" == *" $(xdotool getwindowpid "$w" 2>/dev/null) "* ]] && map_ms=$(( $(now_ms) - t0 ))
+    done
+    [[ "$map_ms" != NA ]] && break
     sleep 0.02
   done
 
@@ -135,6 +141,7 @@ for run in $(seq 1 "$runs"); do
   for _ in $(seq 1 100); do kill -0 "$root" 2>/dev/null || break; sleep 0.1; done
   kill -KILL -- -"$root" 2>/dev/null
   pkill -KILL -f "$BENCH_HOME" 2>/dev/null
+  for _ in $(seq 1 50); do xdotool search --name Synara >/dev/null 2>&1 || break; sleep 0.1; done
   sleep 1
   rm -rf "$BENCH_HOME"
 done
