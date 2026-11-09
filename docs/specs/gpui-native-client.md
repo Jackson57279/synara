@@ -283,7 +283,7 @@ Sizes come from the web UI inventory. "Native" means built in GPUI; "Reuse" mean
 | 1   | App shell, window chrome, titlebar                | M        | Native; custom titlebar on Win/Linux, traffic lights on macOS        | 1     |
 | 2   | Sidebar (hosts, projects, threads, hubs, groups)  | XL       | Native `uniform_list` per section; drag-reorder; context menus       | 2     |
 | 3   | Transcript (messages, tool calls, diffs, images)  | XL       | `synara-transcript`; per-kind renderers                              | 2     |
-| 4   | Markdown + code highlighting                      | L        | `pulldown-cmark` + tree-sitter highlight; same theme tokens          | 2     |
+| 4   | Markdown + code highlighting                      | L        | gpui-base `TextView::markdown` (GFM); tree-sitter highlight next     | 2     |
 | 5   | Composer (Lexical: mentions, chips, paste, slash) | XL       | `synara-composer` on gpui-kit `Input` with an inline-chip layer      | 2     |
 | 6   | Model / effort / approval pickers                 | M        | Native popovers driven by provider capabilities from contracts       | 2     |
 | 7   | Approvals and permission prompts                  | M        | Native; keyboard-first                                               | 2     |
