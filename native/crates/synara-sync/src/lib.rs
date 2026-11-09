@@ -12,6 +12,7 @@
 //! - a server-instance change drops every cursor (`reset`).
 
 pub mod message;
+pub mod pending;
 pub mod shell;
 pub mod thread;
 

@@ -81,6 +81,19 @@ pub struct ThreadDeletedPayload {
     pub deleted_at: String,
 }
 
+/// `thread.approval-response-requested` / `thread.user-input-response-requested`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseRequestedPayload {
+    pub thread_id: ThreadId,
+    pub request_id: String,
+    #[serde(default)]
+    pub lifecycle_generation: Option<String>,
+    #[serde(default)]
+    pub decision: Option<String>,
+    pub created_at: String,
+}
+
 /// The event types the transcript reacts to.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ThreadEvent {
@@ -89,6 +102,13 @@ pub enum ThreadEvent {
     SessionSet(Box<SessionSetPayload>),
     ProposedPlanUpserted(Box<ProposedPlanUpsertedPayload>),
     MetaUpdated(MetaUpdatedPayload),
+    /// The server accepted a response to an approval (`approval: true`) or a
+    /// question; the matching pending interaction is now `responding`.
+    ResponseRequested {
+        approval: bool,
+        command_id: Option<CommandId>,
+        payload: ResponseRequestedPayload,
+    },
     Deleted(ThreadDeletedPayload),
     /// `thread.reverted` / `thread.conversation-rolled-back`: history changed
     /// underneath the client; the thread must be re-snapshotted.
@@ -106,6 +126,8 @@ pub mod types {
     pub const PROPOSED_PLAN_UPSERTED: &str = "thread.proposed-plan-upserted";
     pub const META_UPDATED: &str = "thread.meta-updated";
     pub const DELETED: &str = "thread.deleted";
+    pub const APPROVAL_RESPONSE_REQUESTED: &str = "thread.approval-response-requested";
+    pub const USER_INPUT_RESPONSE_REQUESTED: &str = "thread.user-input-response-requested";
     pub const REVERTED: &str = "thread.reverted";
     pub const ROLLED_BACK: &str = "thread.conversation-rolled-back";
 }
@@ -127,6 +149,13 @@ impl OrchestrationEvent {
             }
             types::META_UPDATED => ThreadEvent::MetaUpdated(parse(&self.payload)?),
             types::DELETED => ThreadEvent::Deleted(parse(&self.payload)?),
+            kind @ (types::APPROVAL_RESPONSE_REQUESTED | types::USER_INPUT_RESPONSE_REQUESTED) => {
+                ThreadEvent::ResponseRequested {
+                    approval: kind == types::APPROVAL_RESPONSE_REQUESTED,
+                    command_id: self.command_id.clone(),
+                    payload: parse(&self.payload)?,
+                }
+            }
             types::REVERTED | types::ROLLED_BACK => ThreadEvent::HistoryRewritten {
                 thread_id: self
                     .payload

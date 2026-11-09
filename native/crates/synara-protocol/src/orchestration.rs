@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::events::OrchestrationEvent;
-use crate::ids::{MessageId, ProjectId, SpaceId, ThreadId, TurnId};
+use crate::ids::{CommandId, MessageId, ProjectId, SpaceId, ThreadId, TurnId};
 
 /// Fields this client does not model, kept so values round-trip.
 pub type Extra = Map<String, Value>;
@@ -328,8 +328,39 @@ pub struct Thread {
     pub activities: Vec<Activity>,
     pub latest_turn: Option<LatestTurn>,
     pub session: Option<Session>,
+    /// Server-side settlement state for approvals and questions. When present
+    /// it is authoritative: only `pending`/`retryable` entries are actionable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_interactions: Option<Vec<PendingInteraction>>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+/// `OrchestrationPendingInteraction`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingInteraction {
+    /// `approval` or `userInput`.
+    pub interaction_kind: String,
+    pub request_id: String,
+    #[serde(default)]
+    pub lifecycle_generation: Option<String>,
+    /// `pending`, `responding`, `confirmed`, `retryable`, `uncertain`.
+    pub status: String,
+    #[serde(default)]
+    pub turn_id: Option<TurnId>,
+    #[serde(default)]
+    pub decision: Option<String>,
+    #[serde(default)]
+    pub response_command_id: Option<CommandId>,
+    #[serde(default)]
+    pub response_requested_at: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub resolved_at: Option<String>,
     #[serde(flatten)]
     pub extra: Extra,
 }

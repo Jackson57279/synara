@@ -36,6 +36,16 @@ pub struct TurnMessage {
     pub attachments: Vec<Value>,
 }
 
+/// `ProviderApprovalDecision`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ApprovalDecision {
+    Accept,
+    AcceptForSession,
+    Decline,
+    Cancel,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type")]
 pub enum ClientCommand {
@@ -73,6 +83,16 @@ pub enum ClientCommand {
         model_selection: Option<ModelSelection>,
         runtime_mode: RuntimeMode,
         interaction_mode: InteractionMode,
+        created_at: String,
+    },
+    #[serde(rename = "thread.approval.respond", rename_all = "camelCase")]
+    ApprovalRespond {
+        command_id: CommandId,
+        thread_id: ThreadId,
+        request_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        lifecycle_generation: Option<String>,
+        decision: ApprovalDecision,
         created_at: String,
     },
     #[serde(rename = "thread.turn.interrupt", rename_all = "camelCase")]
@@ -153,6 +173,22 @@ impl ClientCommand {
         self
     }
 
+    pub fn approval_respond(
+        thread_id: ThreadId,
+        request_id: impl Into<String>,
+        lifecycle_generation: Option<String>,
+        decision: ApprovalDecision,
+    ) -> Self {
+        Self::ApprovalRespond {
+            command_id: CommandId::random(),
+            thread_id,
+            request_id: request_id.into(),
+            lifecycle_generation,
+            decision,
+            created_at: iso_now(),
+        }
+    }
+
     pub fn interrupt(thread_id: ThreadId, turn_id: Option<TurnId>) -> Self {
         Self::TurnInterrupt {
             command_id: CommandId::random(),
@@ -168,6 +204,7 @@ impl ClientCommand {
             Self::ProjectCreate { command_id, .. }
             | Self::ThreadCreate { command_id, .. }
             | Self::TurnStart { command_id, .. }
+            | Self::ApprovalRespond { command_id, .. }
             | Self::TurnInterrupt { command_id, .. } => command_id,
         }
     }

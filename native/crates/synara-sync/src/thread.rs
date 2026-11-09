@@ -37,6 +37,8 @@ pub struct ThreadChange {
     pub plans: bool,
     pub session: bool,
     pub meta: bool,
+    /// `pendingInteractions` changed.
+    pub pending: bool,
 }
 
 impl ThreadChange {
@@ -52,6 +54,7 @@ impl ThreadChange {
         self.plans |= other.plans;
         self.session |= other.session;
         self.meta |= other.meta;
+        self.pending |= other.pending;
     }
 }
 
@@ -206,6 +209,13 @@ impl ThreadStore {
             }
             ThreadEvent::ActivityAppended(payload) => {
                 let activity = payload.activity;
+                if crate::pending::reconcile_activity(
+                    &thread.id,
+                    &mut thread.pending_interactions,
+                    &activity,
+                ) {
+                    change.pending = true;
+                }
                 match thread.activities.iter_mut().find(|a| a.id == activity.id) {
                     Some(existing) => *existing = activity,
                     None => thread.activities.push(activity),
@@ -234,6 +244,22 @@ impl ThreadStore {
                 thread.deleted_at = Some(payload.deleted_at);
                 self.status = ThreadStatus::Deleted;
                 change.meta = true;
+            }
+            ThreadEvent::ResponseRequested {
+                approval,
+                command_id,
+                payload,
+            } => {
+                if payload.thread_id == thread.id
+                    && crate::pending::mark_responding(
+                        &mut thread.pending_interactions,
+                        approval,
+                        command_id.as_ref(),
+                        &payload,
+                    )
+                {
+                    change.pending = true;
+                }
             }
             ThreadEvent::HistoryRewritten { .. } => {
                 self.status = ThreadStatus::NeedsSnapshot;
