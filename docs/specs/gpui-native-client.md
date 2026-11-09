@@ -243,6 +243,20 @@ Port the rules exactly; they are product rules, not web workarounds:
 | `ORCHESTRATION_SNAPSHOT_STALLED`       | thread stream `Exit` failure | Inline error on that thread with a "Retry" button; other threads unaffected |
 | `Defect`                               | server                       | Fail every pending call, reconnect, log the defect to the client log        |
 | Dispatch rejected                      | `dispatchCommand` failure    | Composer keeps the draft and shows the error under it                       |
+| Provider session error                 | `session.lastError`          | Banner above the composer, except the non-fatal closed-stdin message        |
+| Latest turn failed, no `lastError`     | thread `activities`          | Same banner: "Turn failed: <reason>" (see below)                            |
+
+Providers often record a failed turn only as activities. A Codex 401 leaves
+`lastError` empty and writes `runtime.error` plus `turn.completed`
+`{state: "failed"}`. For the latest turn the client mirrors
+`deriveTurnTimingByTurnId` and `summarizeTurnFailureReason` in
+`apps/web/src/components/chat/MessagesTimeline.logic.ts`. A turn that later
+completed counts as recovered, and a stopped turn counts as not failed. The
+reason is capped at 80 characters, and capacity and quota failures get short
+names. `latestTurn.state == "error"` with no failure activity shows just "Turn
+failed". Per-turn failure rows in the timeline come with the work log in
+Phase 3. `synara-probe thread <ID>` prints a thread's session, latest turn,
+and activities when a turn's outcome is unclear.
 
 ### 5.7 Logging
 
