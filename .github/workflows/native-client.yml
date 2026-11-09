@@ -1,0 +1,122 @@
+name: Native client
+
+# Builds and checks the Rust GPUI client in native/ on each desktop platform
+# and uploads unsigned packages. Windows and macOS release builds need their
+# own SDKs (fxc.exe, the Metal compiler), so they cannot be cross-built.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/native-client.yml"
+      - "native/**"
+  push:
+    branches: ["native-gpui-client"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-client-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: native
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  linux:
+    name: Linux check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install windowing and GPU libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev libwayland-dev \
+            libfontconfig-dev libfreetype-dev libvulkan-dev libssl-dev pkg-config cmake clang \
+            libasound2-dev libzstd-dev libdbus-1-dev
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: native-linux-${{ hashFiles('native/Cargo.lock', 'native/rust-toolchain.toml') }}
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+
+  windows:
+    name: Windows build
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: native-windows-${{ hashFiles('native/Cargo.lock', 'native/rust-toolchain.toml') }}
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Release build
+        run: cargo build --release -p synara-app --locked
+      - name: Package
+        shell: pwsh
+        run: ./scripts/build-windows-zip.ps1 -Binary target/release/synara.exe -OutDir dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: synara-native-windows-x64
+          path: native/dist/*.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS build
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      # GPUI compiles its Metal shaders with the Xcode toolchain.
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: native-macos-${{ hashFiles('native/Cargo.lock', 'native/rust-toolchain.toml') }}
+      - name: Add the Intel target
+        run: rustup target add x86_64-apple-darwin
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Release builds
+        run: |
+          cargo build --release -p synara-app --locked --target aarch64-apple-darwin
+          cargo build --release -p synara-app --locked --target x86_64-apple-darwin
+      - name: Package
+        run: |
+          scripts/build-macos-app.sh dist \
+            target/aarch64-apple-darwin/release/synara \
+            target/x86_64-apple-darwin/release/synara
+      - uses: actions/upload-artifact@v7
+        with:
+          name: synara-native-macos-universal
+          path: native/dist/*.zip
+          if-no-files-found: error
