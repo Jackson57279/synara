@@ -254,9 +254,17 @@ Providers often record a failed turn only as activities. A Codex 401 leaves
 completed counts as recovered, and a stopped turn counts as not failed. The
 reason is capped at 80 characters, and capacity and quota failures get short
 names. `latestTurn.state == "error"` with no failure activity shows just "Turn
-failed". Per-turn failure rows in the timeline come with the work log in
-Phase 3. `synara-probe thread <ID>` prints a thread's session, latest turn,
+failed". `synara-probe thread <ID>` prints a thread's session, latest turn,
 and activities when a turn's outcome is unclear.
+
+The transcript interleaves work-log rows with messages by `createdAt`
+(`synara-app/src/worklog.rs`, a reduced `deriveWorkLogEntries` from
+`apps/web/src/workLog.ts`). Ported so far: the quiet-activity filters, one row
+per tool call (`extractToolCallId` collapse), `payload.detail` with ANSI
+stripped, and one "Task interrupted" row per failed turn
+(`deriveTurnFailureEntries`, including the capacity wording). Not yet ported:
+per-turn collapsing and the specialised cards (subagents, background tasks,
+handoffs, visuals, question/answer exchanges), which show as plain rows.
 
 ### 5.7 Logging
 
