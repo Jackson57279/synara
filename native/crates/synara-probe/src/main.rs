@@ -40,8 +40,12 @@ struct Cli {
     timeout: u64,
     /// Start `apps/server` from this checkout with a throwaway home through
     /// `synara-supervisor`, probe it, then stop it. Overrides `--url`/`--token`.
-    #[arg(long, value_name = "REPO")]
+    #[arg(long, value_name = "REPO", conflicts_with = "instabox")]
     spawn: Option<PathBuf>,
+    /// Bring up the server in this instabox sandbox (starting or resuming it),
+    /// reach it through `instabox port-forward`, and probe it there.
+    #[arg(long, value_name = "SANDBOX")]
+    instabox: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -78,6 +82,9 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let mut cli = Cli::parse();
+    if let Some(sandbox) = cli.instabox.clone() {
+        return probe_instabox(&mut cli, &sandbox).await;
+    }
     let Some(repo) = cli.spawn.clone() else {
         return probe(&cli).await;
     };
@@ -106,6 +113,24 @@ async fn main() -> Result<()> {
         supervisor.status()
     );
     let _ = std::fs::remove_dir_all(&home);
+    result
+}
+
+async fn probe_instabox(cli: &mut Cli, sandbox: &str) -> Result<()> {
+    let instabox = synara_instabox::Instabox::default();
+    let mut spec = synara_instabox::SynaraHostSpec::new(sandbox);
+    spec.auth_token.clone_from(&cli.token);
+    let host = synara_instabox::SynaraHost::bring_up(&instabox, &spec)
+        .await
+        .context("bring up the instabox host")?;
+    println!(
+        "ok   instabox host {} forwarded to {}",
+        host.sandbox, host.url
+    );
+    cli.url = host.url.clone();
+    cli.token = Some(host.auth_token.clone());
+    let result = probe(cli).await;
+    host.close().await;
     result
 }
 

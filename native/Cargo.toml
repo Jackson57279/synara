@@ -6,6 +6,7 @@ members = [
     "crates/synara-rpc",
     "crates/synara-session",
     "crates/synara-supervisor",
+    "crates/synara-instabox",
     "crates/synara-probe",
 ]
 # synara-app pulls in GPUI and is built on its own (see native/README.md) so the
