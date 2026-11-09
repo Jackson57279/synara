@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/synara-protocol",
+    "crates/synara-rpc",
+    "crates/synara-sync",
+    "crates/synara-session",
+    "crates/synara-supervisor",
+    "crates/synara-instabox",
+    "crates/synara-probe",
+]
+# synara-app pulls in GPUI and is built on its own (see native/README.md) so the
+# headless crates stay quick to build and test on machines without GPU libraries.
+exclude = ["crates/synara-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.90"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "process", "io-util", "signal"] }
+tokio-tungstenite = { version = "0.27", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+time = { version = "0.3", features = ["formatting", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+clap = { version = "4", features = ["derive", "env"] }
+rand = "0.9"
+
+synara-protocol = { path = "crates/synara-protocol" }
+synara-rpc = { path = "crates/synara-rpc" }
+synara-sync = { path = "crates/synara-sync" }
+synara-session = { path = "crates/synara-session" }
+synara-supervisor = { path = "crates/synara-supervisor" }
+synara-instabox = { path = "crates/synara-instabox" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
