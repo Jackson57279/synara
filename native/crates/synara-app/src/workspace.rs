@@ -13,11 +13,56 @@ use synara_protocol::orchestration::{MessageRole, ModelSelection};
 use synara_session::SessionEvent;
 use tokio::sync::mpsc;
 
+use synara_protocol::server::ResolvedKeybinding;
+
 use crate::backend::{Backend, BackendEvent};
+use crate::keymap::{self, Command};
 use crate::model::{
-    connection_label, plan_list_update, sidebar_rows, thread_banner, transcript_rows, ListUpdate,
-    SidebarRow, TranscriptRow,
+    connection_label, current_project, nth_thread, plan_list_update, sidebar_rows, step_thread,
+    thread_banner, transcript_rows, ListUpdate, SidebarRow, TranscriptRow,
 };
+
+// One action per web command id this window handles; `keymap` maps the
+// server's resolved keybindings onto them.
+actions!(
+    synara,
+    [
+        NewThread,
+        ToggleSidebar,
+        NextThread,
+        PreviousThread,
+        JumpThread1,
+        JumpThread2,
+        JumpThread3,
+        JumpThread4,
+        JumpThread5,
+        JumpThread6,
+        JumpThread7,
+        JumpThread8,
+        JumpThread9,
+    ]
+);
+
+/// Key context the bindings are scoped to: the whole window.
+const KEY_CONTEXT: &str = "Workspace";
+
+fn command_action(command: Command) -> Box<dyn Action> {
+    match command {
+        Command::NewThread => Box::new(NewThread),
+        Command::ToggleSidebar => Box::new(ToggleSidebar),
+        Command::NextThread => Box::new(NextThread),
+        Command::PreviousThread => Box::new(PreviousThread),
+        Command::JumpThread(0) => Box::new(JumpThread1),
+        Command::JumpThread(1) => Box::new(JumpThread2),
+        Command::JumpThread(2) => Box::new(JumpThread3),
+        Command::JumpThread(3) => Box::new(JumpThread4),
+        Command::JumpThread(4) => Box::new(JumpThread5),
+        Command::JumpThread(5) => Box::new(JumpThread6),
+        Command::JumpThread(6) => Box::new(JumpThread7),
+        Command::JumpThread(7) => Box::new(JumpThread8),
+        Command::JumpThread(_) => Box::new(JumpThread9),
+    }
+}
 
 /// Used when a project has no default model of its own.
 const FALLBACK_PROVIDER: &str = "codex";
@@ -49,6 +94,10 @@ pub struct Workspace {
     working: bool,
     /// The selected thread's error banner.
     thread_error: Option<String>,
+    focus: FocusHandle,
+    sidebar_visible: bool,
+    /// GPUI cannot remove bindings, so the first config wins until restart.
+    keys_installed: bool,
     _subscriptions: Vec<Subscription>,
     _pump: Task<()>,
 }
@@ -90,7 +139,7 @@ impl Workspace {
                 }
                 let applied = this.update(cx, |this, cx| {
                     for event in batch {
-                        this.on_event(event);
+                        this.on_event(event, cx);
                     }
                     cx.notify();
                 });
@@ -100,6 +149,8 @@ impl Workspace {
             }
         });
 
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
         let list_state = ListState::new(0, ListAlignment::Bottom, px(800.));
         list_state.set_follow_mode(FollowMode::Tail);
 
@@ -115,13 +166,17 @@ impl Workspace {
             notice: None,
             working: false,
             thread_error: None,
+            focus,
+            sidebar_visible: true,
+            keys_installed: false,
             _subscriptions: vec![submit, quit],
             _pump: pump,
         }
     }
 
-    fn on_event(&mut self, event: BackendEvent) {
+    fn on_event(&mut self, event: BackendEvent, cx: &mut Context<Self>) {
         match event {
+            BackendEvent::Keybindings(rules) => self.install_keys(&rules, cx),
             BackendEvent::Progress(text) => self.status = (text, false),
             BackendEvent::SessionStarted => self.refresh_sidebar(),
             BackendEvent::Notice(text) => self.notice = Some(text),
@@ -139,6 +194,56 @@ impl Workspace {
                 if self.selected.as_ref() == Some(&thread_id) {
                     self.notice = Some(format!("Thread stopped updating: {error}"));
                 }
+            }
+        }
+    }
+
+    fn install_keys(&mut self, rules: &[ResolvedKeybinding], cx: &mut Context<Self>) {
+        if self.keys_installed {
+            return;
+        }
+        let context = KeyBindingContextPredicate::parse(KEY_CONTEXT)
+            .ok()
+            .map(Rc::new);
+        let mut installed = Vec::new();
+        for (keys, command) in keymap::bindings(rules, cfg!(target_os = "macos")) {
+            match KeyBinding::load(
+                &keys,
+                command_action(command),
+                context.clone(),
+                false,
+                None,
+                cx,
+            ) {
+                Ok(binding) => installed.push(binding),
+                Err(error) => tracing::warn!(%keys, ?error, "skipping keybinding"),
+            }
+        }
+        tracing::info!(count = installed.len(), "installed keybindings");
+        cx.bind_keys(installed);
+        self.keys_installed = true;
+    }
+
+    fn jump(&mut self, n: usize, cx: &mut Context<Self>) {
+        if let Some(thread_id) = nth_thread(&self.sidebar, n) {
+            self.select(thread_id);
+            cx.notify();
+        }
+    }
+
+    fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(thread_id) = step_thread(&self.sidebar, self.selected.as_ref(), delta) {
+            self.select(thread_id);
+            cx.notify();
+        }
+    }
+
+    fn new_thread_here(&mut self, cx: &mut Context<Self>) {
+        match current_project(&self.sidebar, self.selected.as_ref()) {
+            Some(project_id) => self.new_thread(project_id, cx),
+            None => {
+                self.notice = Some("Add a project before starting a thread".into());
+                cx.notify();
             }
         }
     }
@@ -482,16 +587,40 @@ fn message_row(row: &TranscriptRow) -> impl IntoElement {
     )
 }
 
+fn on_jump<A: Action>(root: Div, n: usize, cx: &mut Context<Workspace>) -> Div {
+    root.on_action(cx.listener(move |this, _: &A, _, cx| this.jump(n, cx)))
+}
+
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
+        let root = div()
+            .key_context(KEY_CONTEXT)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &NewThread, _, cx| this.new_thread_here(cx)))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                this.sidebar_visible = !this.sidebar_visible;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &NextThread, _, cx| this.step(1, cx)))
+            .on_action(cx.listener(|this, _: &PreviousThread, _, cx| this.step(-1, cx)));
+        let root = on_jump::<JumpThread1>(root, 0, cx);
+        let root = on_jump::<JumpThread2>(root, 1, cx);
+        let root = on_jump::<JumpThread3>(root, 2, cx);
+        let root = on_jump::<JumpThread4>(root, 3, cx);
+        let root = on_jump::<JumpThread5>(root, 4, cx);
+        let root = on_jump::<JumpThread6>(root, 5, cx);
+        let root = on_jump::<JumpThread7>(root, 6, cx);
+        let root = on_jump::<JumpThread8>(root, 7, cx);
+        let root = on_jump::<JumpThread9>(root, 8, cx);
+        root.size_full()
             .flex()
             .flex_row()
             .bg(rgb(palette::BG))
             .text_color(rgb(palette::FG))
             .text_size(px(13.))
-            .child(self.render_sidebar(cx))
+            .when(self.sidebar_visible, |root| {
+                root.child(self.render_sidebar(cx))
+            })
             .child(
                 div()
                     .flex_1()

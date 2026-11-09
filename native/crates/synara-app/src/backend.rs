@@ -14,7 +14,8 @@ use synara_instabox::{Instabox, SynaraHost, SynaraHostSpec};
 use synara_protocol::commands::{ClientCommand, InteractionMode, RuntimeMode};
 use synara_protocol::ids::{ProjectId, ThreadId};
 use synara_protocol::orchestration::ModelSelection;
-use synara_session::{Session, SessionConfig, SessionEvent};
+use synara_protocol::server::ResolvedKeybinding;
+use synara_session::{ConnectionState, Session, SessionConfig, SessionEvent};
 use synara_supervisor::{ServerCommand, ServerSpec, Supervisor};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -55,6 +56,8 @@ pub enum BackendEvent {
     Notice(String),
     /// A thread this client created, so the window can select it.
     ThreadCreated(ThreadId),
+    /// The server's resolved keybindings, read after each connect.
+    Keybindings(Vec<ResolvedKeybinding>),
 }
 
 /// The host keeping the server alive, stopped on shutdown.
@@ -111,6 +114,14 @@ impl Backend {
             *session_slot.lock().expect("session lock") = Some(session);
             let _ = events.send(BackendEvent::SessionStarted);
             while let Some(event) = session_events.recv().await {
+                if let SessionEvent::Connection(ConnectionState::Connected { .. }) = &event {
+                    // Read from the slot: a clone held here would keep the
+                    // session alive past `shutdown`.
+                    let session = session_slot.lock().expect("session lock").clone();
+                    if let Some(session) = session {
+                        tokio::spawn(read_keybindings(session, events.clone()));
+                    }
+                }
                 if events.send(BackendEvent::Session(event)).is_err() {
                     break;
                 }
@@ -223,6 +234,15 @@ impl Backend {
 impl Drop for Backend {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+async fn read_keybindings(session: Session, events: mpsc::UnboundedSender<BackendEvent>) {
+    match session.server_config().await {
+        Ok(config) => {
+            let _ = events.send(BackendEvent::Keybindings(config.keybindings));
+        }
+        Err(error) => tracing::warn!(%error, "could not read server config; no keybindings"),
     }
 }
 

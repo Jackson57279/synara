@@ -7,6 +7,7 @@
 //! ```
 
 mod backend;
+mod keymap;
 mod model;
 mod workspace;
 

@@ -94,6 +94,55 @@ pub fn thread_error(thread: &Thread) -> Option<String> {
     (!error.is_empty() && !non_fatal).then(|| error.to_owned())
 }
 
+fn thread_ids(rows: &[SidebarRow]) -> impl Iterator<Item = &ThreadId> {
+    rows.iter().filter_map(|row| match row {
+        SidebarRow::Thread { id, .. } => Some(id),
+        SidebarRow::Project { .. } => None,
+    })
+}
+
+/// The `n`th visible thread (`thread.jump.N`, zero-based).
+pub fn nth_thread(rows: &[SidebarRow], n: usize) -> Option<ThreadId> {
+    thread_ids(rows).nth(n).cloned()
+}
+
+/// The visible thread `delta` steps from `selected`, wrapping
+/// (`chat.visible.next`/`previous`). With nothing selected, forward starts at
+/// the first thread and backward at the last.
+pub fn step_thread(
+    rows: &[SidebarRow],
+    selected: Option<&ThreadId>,
+    delta: isize,
+) -> Option<ThreadId> {
+    let ids: Vec<&ThreadId> = thread_ids(rows).collect();
+    if ids.is_empty() {
+        return None;
+    }
+    let len = ids.len() as isize;
+    let next = match selected.and_then(|s| ids.iter().position(|id| *id == s)) {
+        Some(at) => (at as isize + delta).rem_euclid(len),
+        None if delta >= 0 => 0,
+        None => len - 1,
+    };
+    Some(ids[next as usize].clone())
+}
+
+/// Where `chat.new` creates a thread: the selected thread's project, else
+/// the first project in the sidebar.
+pub fn current_project(rows: &[SidebarRow], selected: Option<&ThreadId>) -> Option<ProjectId> {
+    let of_selected = rows.iter().find_map(|row| match row {
+        SidebarRow::Thread { id, project_id, .. } if Some(id) == selected => Some(project_id),
+        _ => None,
+    });
+    let first = || {
+        rows.iter().find_map(|row| match row {
+            SidebarRow::Project { id, .. } => Some(id),
+            SidebarRow::Thread { .. } => None,
+        })
+    };
+    of_selected.or_else(first).cloned()
+}
+
 /// Longest failure reason shown, as in `MAX_TURN_FAILURE_REASON_CHARS`.
 const MAX_FAILURE_REASON_CHARS: usize = 80;
 
@@ -402,6 +451,49 @@ mod tests {
             "interrupted",
         );
         assert_eq!(thread_banner(&stopped), None);
+    }
+
+    fn sidebar() -> Vec<SidebarRow> {
+        let thread = |id: &str, project: &str| SidebarRow::Thread {
+            id: ThreadId::from(id),
+            project_id: ProjectId::from(project),
+            title: id.into(),
+            pinned: false,
+            working: false,
+            needs_attention: false,
+        };
+        vec![
+            SidebarRow::Project {
+                id: ProjectId::from("p1"),
+                title: "One".into(),
+            },
+            thread("a", "p1"),
+            thread("b", "p1"),
+            SidebarRow::Project {
+                id: ProjectId::from("p2"),
+                title: "Two".into(),
+            },
+            thread("c", "p2"),
+        ]
+    }
+
+    #[test]
+    fn navigates_visible_threads() {
+        let rows = sidebar();
+        let id = |s: &str| ThreadId::from(s);
+        assert_eq!(nth_thread(&rows, 2), Some(id("c")));
+        assert_eq!(nth_thread(&rows, 3), None);
+        assert_eq!(step_thread(&rows, Some(&id("b")), 1), Some(id("c")));
+        assert_eq!(step_thread(&rows, Some(&id("c")), 1), Some(id("a")));
+        assert_eq!(step_thread(&rows, Some(&id("a")), -1), Some(id("c")));
+        assert_eq!(step_thread(&rows, None, 1), Some(id("a")));
+        assert_eq!(step_thread(&rows, None, -1), Some(id("c")));
+        assert_eq!(step_thread(&[], None, 1), None);
+        assert_eq!(
+            current_project(&rows, Some(&id("c"))),
+            Some(ProjectId::from("p2"))
+        );
+        assert_eq!(current_project(&rows, None), Some(ProjectId::from("p1")));
     }
 
     #[test]

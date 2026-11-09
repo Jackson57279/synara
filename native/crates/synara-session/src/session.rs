@@ -10,6 +10,7 @@ use synara_protocol::generated::STREAM_LIMIT_THREAD;
 use synara_protocol::ids::{MessageId, ThreadId};
 use synara_protocol::negotiate::{ClientOffer, CompatibilityError, NegotiateResult};
 use synara_protocol::orchestration::{ShellStreamItem, SubscribeThreadInput, ThreadStreamItem};
+use synara_protocol::server::ServerConfig;
 use synara_protocol::tags;
 use synara_rpc::negotiate::negotiate;
 use synara_rpc::{ClientConfig, ConnectError, Disconnect, RpcClient, RpcError};
@@ -273,6 +274,18 @@ impl Session {
                 other => SendError::Rpc(other),
             })?;
         Ok(result.sequence)
+    }
+
+    /// Reads `server.getConfig` (keybindings and the rest of the config).
+    pub async fn server_config(&self) -> Result<ServerConfig, SendError> {
+        let client = self
+            .shared
+            .current_client()
+            .ok_or(SendError::NotConnected)?;
+        client
+            .call(tags::SERVER_GET_CONFIG, &serde_json::json!({}))
+            .await
+            .map_err(SendError::Rpc)
     }
 
     /// Sends a user message. It shows in the transcript immediately and

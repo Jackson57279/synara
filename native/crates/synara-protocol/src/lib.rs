@@ -12,5 +12,6 @@ pub mod generated;
 pub mod ids;
 pub mod negotiate;
 pub mod orchestration;
+pub mod server;
 
 pub use generated::{tags, RpcInfo};
