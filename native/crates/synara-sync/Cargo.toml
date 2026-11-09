@@ -1,0 +1,18 @@
+[package]
+name = "synara-sync"
+description = "Pure shell and thread reducers for the Synara native client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+synara-protocol.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true
