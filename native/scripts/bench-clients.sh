@@ -83,9 +83,6 @@ threads() {
   echo "$sum"
 }
 
-frame_hash() {
-  import -display "$display" -window root rgb:- 2>/dev/null | md5sum | cut -c1-16
-}
 
 hz=$(getconf CLK_TCK)
 echo "label,run,map_ms,ready_ms,client_procs,client_threads,client_pss_mib,total_pss_mib,client_idle_cpu_pct"
@@ -109,13 +106,17 @@ for run in $(seq 1 "$runs"); do
     sleep 0.02
   done
 
-  ready_ms=NA last="" since=0 since_t=0
+  # Settled: no change bigger than NOISE_PX pixels (a caret blink, a spinner)
+  # for QUIET_MS. ready_ms is when the last big change was seen.
+  ready_ms=NA prev="/tmp/bench-prev.png" cur="/tmp/bench-cur.png"
+  import -display "$display" -window root "$prev" 2>/dev/null
+  last_change=$(now_ms)
   while (( $(now_ms) < deadline )); do
-    h=$(frame_hash); t=$(now_ms)
-    if [[ "$h" != "$last" ]]; then last="$h"; since_t=$t; since=$t
-    elif (( t - since >= 1500 )); then ready_ms=$(( since_t - t0 )); break
+    import -display "$display" -window root "$cur" 2>/dev/null; t=$(now_ms)
+    px=$(compare -metric AE "$prev" "$cur" null: 2>&1 | awk '{print int($1)}')
+    if (( ${px:-0} > ${NOISE_PX:-500} )); then last_change=$t; mv "$cur" "$prev"
+    elif (( t - last_change >= ${QUIET_MS:-4000} )); then ready_ms=$(( last_change - t0 )); break
     fi
-    sleep 0.05
   done
   import -display "$display" -window root "/tmp/bench-$label-$run.png" 2>/dev/null
 
