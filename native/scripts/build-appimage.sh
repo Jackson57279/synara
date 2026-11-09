@@ -28,7 +28,7 @@ if [[ "$(printf '%s\n%s\n' "$need" "$max_glibc" | sort -V | tail -1)" != "$max_g
   exit 1
 fi
 
-version="$(grep -m1 '^version' "$root/native/crates/synara-app/Cargo.toml" | cut -d'"' -f2)"
+version="$("$bin" --version | awk '{print $2}')"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 app="$work/Synara-Native.AppDir"
