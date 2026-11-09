@@ -351,18 +351,28 @@ impl Workspace {
             .when(self.working, |header| {
                 header.child(
                     div()
-                        .id("stop-turn")
-                        .px_2()
-                        .py_0p5()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(rgb(palette::BORDER))
-                        .cursor_pointer()
-                        .hover(|style| style.bg(rgb(palette::SELECTED)))
-                        .child("Stop")
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop(cx))),
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_3()
+                        .child(div().text_color(rgb(palette::ACCENT)).child("Working…"))
+                        .child(self.stop_button(cx)),
                 )
             })
+    }
+
+    fn stop_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("stop-turn")
+            .px_2()
+            .py_0p5()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(palette::BORDER))
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(palette::SELECTED)))
+            .child("Stop")
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop(cx)))
     }
 
     fn render_transcript(&self) -> AnyElement {
@@ -377,14 +387,12 @@ impl Workspace {
                 .into_any_element();
         }
         let rows = self.transcript.clone();
-        let working = self.working;
         list(self.list_state.clone(), move |ix, _, _| {
             let rows = rows.borrow();
-            let Some(row) = rows.get(ix) else {
-                return div().into_any_element();
-            };
-            let last = ix + 1 == rows.len();
-            message_row(row, working && last).into_any_element()
+            match rows.get(ix) {
+                Some(row) => message_row(row).into_any_element(),
+                None => div().into_any_element(),
+            }
         })
         .flex_1()
         .w_full()
@@ -432,7 +440,7 @@ impl Workspace {
     }
 }
 
-fn message_row(row: &TranscriptRow, show_working: bool) -> impl IntoElement {
+fn message_row(row: &TranscriptRow) -> impl IntoElement {
     let (label, background) = match row.role {
         MessageRole::User => ("You", Some(palette::USER_BG)),
         MessageRole::Assistant => ("Assistant", None),
@@ -459,8 +467,8 @@ fn message_row(row: &TranscriptRow, show_working: bool) -> impl IntoElement {
                     .text_color(rgb(palette::MUTED))
                     .child(label)
                     .when(row.pending, |line| line.child("sending…"))
-                    .when(row.streaming || show_working, |line| {
-                        line.child(div().text_color(rgb(palette::ACCENT)).child("working"))
+                    .when(row.streaming, |line| {
+                        line.child(div().text_color(rgb(palette::ACCENT)).child("streaming"))
                     }),
             )
             .child(div().w_full().child(SharedString::from(text))),
