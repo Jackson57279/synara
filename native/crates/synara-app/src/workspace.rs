@@ -8,6 +8,7 @@ use gpui_kit::base::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::base::TextView;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use synara_protocol::commands::ApprovalDecision;
 use synara_protocol::ids::{ProjectId, ThreadId};
 use synara_protocol::orchestration::{MessageRole, ModelSelection};
 use synara_session::SessionEvent;
@@ -21,6 +22,7 @@ use crate::model::{
     connection_label, current_project, nth_thread, plan_list_update, sidebar_rows, step_thread,
     thread_banner, transcript_rows, ListUpdate, SidebarRow, TranscriptRow,
 };
+use crate::pending::{pending_approvals, PendingApproval};
 use crate::worklog::{Tone, WorkEntry};
 
 // One action per web command id this window handles; `keymap` maps the
@@ -95,6 +97,10 @@ pub struct Workspace {
     working: bool,
     /// The selected thread's error banner.
     thread_error: Option<String>,
+    /// Open approvals for the selected thread, oldest first.
+    approvals: Vec<PendingApproval>,
+    /// Request ids answered from here and not yet settled by the server.
+    answered: Vec<String>,
     focus: FocusHandle,
     sidebar_visible: bool,
     /// GPUI cannot remove bindings, so the first config wins until restart.
@@ -166,6 +172,8 @@ impl Workspace {
             notice: None,
             working: false,
             thread_error: None,
+            approvals: Vec::new(),
+            answered: Vec::new(),
             focus,
             sidebar_visible: true,
             keys_installed: false,
@@ -259,7 +267,7 @@ impl Workspace {
         let Some(thread_id) = self.selected.clone() else {
             return;
         };
-        let (rows, working, error) = self
+        let (rows, working, error, approvals) = self
             .backend
             .with_session(|session| {
                 let state = session.state();
@@ -268,12 +276,16 @@ impl Workspace {
                         transcript_rows(store),
                         store.is_working(),
                         store.thread().and_then(thread_banner),
+                        store.thread().map(pending_approvals).unwrap_or_default(),
                     )
                 })
             })
             .flatten()
             .unwrap_or_default();
         self.thread_error = error;
+        self.answered
+            .retain(|id| approvals.iter().any(|a| &a.request_id == id));
+        self.approvals = approvals;
         let update = plan_list_update(&self.transcript.borrow(), &rows, reset);
         match update {
             ListUpdate::None => {}
@@ -470,6 +482,113 @@ impl Workspace {
                         .child(self.stop_button(cx)),
                 )
             })
+    }
+
+    fn respond(
+        &mut self,
+        approval: &PendingApproval,
+        decision: ApprovalDecision,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(thread_id) = self.selected.clone() else {
+            return;
+        };
+        if self.answered.contains(&approval.request_id) {
+            return;
+        }
+        self.answered.push(approval.request_id.clone());
+        self.backend.respond_approval(
+            thread_id,
+            approval.request_id.clone(),
+            approval.lifecycle_generation.clone(),
+            decision,
+        );
+        cx.notify();
+    }
+
+    /// The oldest open approval above the composer, as on the web
+    /// (`ComposerPendingApprovalPanel`): prompt, request detail, actions.
+    fn render_approval(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let approval = self.approvals.first()?.clone();
+        let answered = self.answered.contains(&approval.request_id);
+        let count = self.approvals.len();
+        let mut actions = div().flex().flex_row().gap_2();
+        for (ix, (decision, label)) in approval.actions().into_iter().enumerate() {
+            let target = approval.clone();
+            let primary = decision == ApprovalDecision::Accept;
+            actions = actions.child(
+                div()
+                    .id(("approval-action", ix))
+                    .px_3()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(if primary {
+                        palette::ACCENT
+                    } else {
+                        palette::BORDER
+                    }))
+                    .when(primary, |button| button.text_color(rgb(palette::ACCENT)))
+                    .when(answered, |button| button.opacity(0.5))
+                    .when(!answered, |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(|style| style.bg(rgb(palette::SELECTED)))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.respond(&target, decision, cx)
+                            }))
+                    })
+                    .child(label),
+            );
+        }
+        Some(
+            div()
+                .mx_3()
+                .mb_2()
+                .p_3()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(palette::ACCENT))
+                .bg(rgb(palette::USER_BG))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_between()
+                        .child(div().child(approval.prompt()))
+                        .when(count > 1, |row| {
+                            row.child(
+                                div()
+                                    .text_color(rgb(palette::MUTED))
+                                    .child(SharedString::from(format!("1 of {count}"))),
+                            )
+                        }),
+                )
+                .when_some(approval.detail.clone(), |card, detail| {
+                    card.child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
+                            .bg(rgb(palette::BG))
+                            .font_family("monospace")
+                            .text_color(rgb(palette::MUTED))
+                            .child(SharedString::from(detail)),
+                    )
+                })
+                .child(if answered {
+                    div()
+                        .text_color(rgb(palette::MUTED))
+                        .child("Sending response…")
+                        .into_any_element()
+                } else {
+                    actions.into_any_element()
+                })
+                .into_any_element(),
+        )
     }
 
     fn stop_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -728,6 +847,7 @@ impl Render for Workspace {
                                 .child(SharedString::from(error)),
                         )
                     })
+                    .when_some(self.render_approval(cx), |column, card| column.child(card))
                     .child(
                         div()
                             .p_3()

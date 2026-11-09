@@ -9,6 +9,7 @@
 mod backend;
 mod keymap;
 mod model;
+mod pending;
 mod worklog;
 mod workspace;
 

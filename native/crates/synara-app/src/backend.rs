@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use synara_instabox::{Instabox, SynaraHost, SynaraHostSpec};
-use synara_protocol::commands::{ClientCommand, InteractionMode, RuntimeMode};
+use synara_protocol::commands::{ApprovalDecision, ClientCommand, InteractionMode, RuntimeMode};
 use synara_protocol::ids::{ProjectId, ThreadId};
 use synara_protocol::orchestration::ModelSelection;
 use synara_protocol::server::ResolvedKeybinding;
@@ -162,6 +162,26 @@ impl Backend {
         self.run(move |session, events| async move {
             if let Err(error) = session.interrupt(&thread_id).await {
                 let _ = events.send(BackendEvent::Notice(format!("Stop failed: {error}")));
+            }
+        });
+    }
+
+    pub fn respond_approval(
+        &self,
+        thread_id: ThreadId,
+        request_id: String,
+        lifecycle_generation: Option<String>,
+        decision: ApprovalDecision,
+    ) {
+        self.run(move |session, events| async move {
+            let command = ClientCommand::approval_respond(
+                thread_id,
+                request_id,
+                lifecycle_generation,
+                decision,
+            );
+            if let Err(error) = session.dispatch(&command).await {
+                let _ = events.send(BackendEvent::Notice(format!("Approval failed: {error}")));
             }
         });
     }
