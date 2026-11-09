@@ -2,6 +2,7 @@
 //! uses, without a window. This is the verification path for hosts the app
 //! cannot reach yet (Stable rejects remote connections).
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -16,6 +17,7 @@ use synara_protocol::orchestration::{
 use synara_protocol::tags;
 use synara_rpc::negotiate::negotiate;
 use synara_rpc::{ClientConfig, RpcClient, RpcStream};
+use synara_supervisor::{ServerCommand, ServerSpec, Supervisor};
 use synara_sync::{ShellStore, ThreadStatus, ThreadStore};
 use url::Url;
 
@@ -36,6 +38,10 @@ struct Cli {
     /// Per-step timeout in seconds.
     #[arg(long, default_value_t = 20)]
     timeout: u64,
+    /// Start `apps/server` from this checkout with a throwaway home through
+    /// `synara-supervisor`, probe it, then stop it. Overrides `--url`/`--token`.
+    #[arg(long, value_name = "REPO")]
+    spawn: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -71,7 +77,39 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    let Some(repo) = cli.spawn.clone() else {
+        return probe(&cli).await;
+    };
+
+    let home = std::env::temp_dir().join(format!("synara-probe-home-{}", std::process::id()));
+    let mut spec = ServerSpec::new(ServerCommand::bun_source(&repo), &home);
+    spec.log_file = Some(home.with_extension("log"));
+    let supervisor = Supervisor::start(spec).await.context("start server")?;
+    let ready = supervisor.wait_ready(Duration::from_secs(180)).await;
+    let result = match ready {
+        Ok(ready) => {
+            println!(
+                "ok   supervisor started server pid {} at {}",
+                ready.pid.unwrap_or_default(),
+                ready.url
+            );
+            cli.url = ready.url;
+            cli.token = Some(ready.auth_token);
+            probe(&cli).await
+        }
+        Err(error) => Err(anyhow::Error::new(error).context("server did not start")),
+    };
+    supervisor.stop().await;
+    println!(
+        "ok   supervisor stopped the server ({:?})",
+        supervisor.status()
+    );
+    let _ = std::fs::remove_dir_all(&home);
+    result
+}
+
+async fn probe(cli: &Cli) -> Result<()> {
     let step = Duration::from_secs(cli.timeout);
     if let Command::Session {
         workspace,
@@ -79,10 +117,10 @@ async fn main() -> Result<()> {
         model,
     } = &cli.command
     {
-        return session::run(&cli, step, workspace, provider, model).await;
+        return session::run(cli, step, workspace, provider, model).await;
     }
 
-    let client = connect(&cli, step).await?;
+    let client = connect(cli, step).await?;
     let mut shell = ShellStore::new();
     let mut shell_stream = client
         .stream(tags::ORCHESTRATION_SUBSCRIBE_SHELL, json!({}))

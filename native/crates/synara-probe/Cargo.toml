@@ -11,6 +11,7 @@ publish.workspace = true
 synara-protocol.workspace = true
 synara-rpc.workspace = true
 synara-session.workspace = true
+synara-supervisor.workspace = true
 synara-sync.workspace = true
 anyhow.workspace = true
 clap.workspace = true
