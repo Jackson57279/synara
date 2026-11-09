@@ -8,7 +8,9 @@
 # $BENCH_HOME (the command must use it: SYNARA_HOME=$BENCH_HOME or
 # --home $BENCH_HOME). Per run it records:
 #   map_ms     launch -> first visible window named Synara
-#   ready_ms   launch -> first frame of a screen that stays unchanged for 1.5 s
+#   ready_ms   launch -> last change bigger than NOISE_PX pixels before a
+#              QUIET_MS quiet spell, watching READY_CROP (WxH+X+Y, such as the
+#              sidebar thread list) or the whole screen
 #   client_*   PSS/CPU/threads of the client processes (the launched tree minus
 #              any server: a process with SYNARA_DESKTOP_PARENT_STDIN=1 and its
 #              descendants)
@@ -115,10 +117,17 @@ for run in $(seq 1 "$runs"); do
   # Settled: no change bigger than NOISE_PX pixels (a caret blink, a spinner)
   # for QUIET_MS. ready_ms is when the last big change was seen.
   ready_ms=NA prev="/tmp/bench-prev.png" cur="/tmp/bench-cur.png"
-  import -display "$display" -window root "$prev" 2>/dev/null
+  grab() {
+    if [[ -n "${READY_CROP:-}" ]]; then
+      import -display "$display" -window root -crop "$READY_CROP" +repage "$1" 2>/dev/null
+    else
+      import -display "$display" -window root "$1" 2>/dev/null
+    fi
+  }
+  grab "$prev"
   last_change=$(now_ms)
   while (( $(now_ms) < deadline )); do
-    import -display "$display" -window root "$cur" 2>/dev/null; t=$(now_ms)
+    grab "$cur"; t=$(now_ms)
     px=$(compare -metric AE "$prev" "$cur" null: 2>&1 | awk '{print int($1)}')
     if (( ${px:-0} > ${NOISE_PX:-500} )); then last_change=$t; mv "$cur" "$prev"
     elif (( t - last_change >= ${QUIET_MS:-4000} )); then ready_ms=$(( last_change - t0 )); break
