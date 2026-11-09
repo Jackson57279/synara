@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Run the native workspace checks: fmt, clippy, tests, manifest drift, and
-# (when a server is running) the probe against it.
+# Run the native workspace checks: fmt, clippy, tests, manifest drift, the
+# probe against a running server (smoke + session), and the probe against a
+# server it spawns through synara-supervisor.
+#
+# SYNARA_NATIVE_SKIP_SPAWN=1 skips the spawned-server pass (it takes ~35 s
+# because the server hangs on shutdown with a provider session running).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -23,10 +27,17 @@ diff -u crates/synara-protocol/src/generated/rpc_manifest.rs "$tmp/rpc_manifest.
 
 port="${SYNARA_PORT:-3773}"
 if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
-  echo "== probe"
-  cargo run -q -p synara-probe -- --url "http://127.0.0.1:${port}" \
-    --token "${SYNARA_AUTH_TOKEN:-native-dev-token}" check
+  echo "== probe (running server)"
+  for cmd in smoke session; do
+    cargo run -q -p synara-probe -- --url "http://127.0.0.1:${port}" \
+      --token "${SYNARA_AUTH_TOKEN:-native-dev-token}" --timeout 60 "$cmd"
+  done
 else
   echo "== probe skipped (no server on ${port})"
+fi
+
+if [[ "${SYNARA_NATIVE_SKIP_SPAWN:-0}" != 1 ]]; then
+  echo "== probe (spawned server)"
+  cargo run -q -p synara-probe -- --spawn "$root" --timeout 60 session
 fi
 echo "all checks passed"
