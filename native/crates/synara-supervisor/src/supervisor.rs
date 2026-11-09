@@ -459,6 +459,10 @@ impl Runner {
         // processes the server started instead of orphaning them.
         #[cfg(unix)]
         command.process_group(0);
+        // No console window for the server, and its own group so console
+        // control events aimed at this app do not reach it.
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
         let mut child = command.spawn()?;
         tracing::info!(pid = child.id(), port = self.port, "server spawned");
         let owner = child.stdin.take();
@@ -558,7 +562,36 @@ async fn stop_child(
             return;
         }
     }
+    // Windows has no process groups to signal; `taskkill /T` walks the tree
+    // from the server so provider processes do not outlive it.
+    #[cfg(windows)]
+    if let Some(pid) = pid {
+        kill_tree(pid).await;
+        if tokio::time::timeout(TERM_GRACE, child.wait()).await.is_ok() {
+            return;
+        }
+    }
     let _ = child.kill().await;
+}
+
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(windows)]
+async fn kill_tree(pid: u32) {
+    let status = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .await;
+    if let Err(error) = status {
+        tracing::warn!(pid, %error, "taskkill on the server tree failed");
+    }
 }
 
 #[cfg(unix)]
@@ -809,6 +842,7 @@ print("owner gone", flush=True)
         let _ = std::fs::remove_dir_all(home);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn crash_loop_gives_up_with_a_summary_and_restart_retries() {
         let home = temp_home("crash");
