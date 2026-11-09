@@ -8,10 +8,20 @@ members = [
     "crates/synara-supervisor",
     "crates/synara-instabox",
     "crates/synara-probe",
+    "crates/synara-app",
 ]
-# synara-app pulls in GPUI and is built on its own (see native/README.md) so the
-# headless crates stay quick to build and test on machines without GPU libraries.
-exclude = ["crates/synara-app"]
+# synara-app pulls in GPUI, so plain `cargo build`/`cargo test` skip it and the
+# headless crates stay quick on machines without GPU libraries. Build it with
+# `-p synara-app` (see native/README.md).
+default-members = [
+    "crates/synara-protocol",
+    "crates/synara-sync",
+    "crates/synara-rpc",
+    "crates/synara-session",
+    "crates/synara-supervisor",
+    "crates/synara-instabox",
+    "crates/synara-probe",
+]
 
 [workspace.package]
 version = "0.1.0"

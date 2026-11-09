@@ -14,18 +14,31 @@ the same WebSocket RPC the web client uses.
 | `synara-supervisor`  | Spawns and supervises a local `apps/server` (readiness, backoff, shutdown)        |
 | `synara-instabox`    | instabox API client: machines, ports, activity leases, wake                       |
 | `synara-probe`       | CLI that connects, prints the sidebar and streams a thread; used for checks       |
-| `synara-app`         | The GPUI desktop app (built separately; needs GPU/windowing libraries)            |
+| `synara-app`         | The GPUI desktop app, binary `synara` (needs GPU/windowing libraries)             |
 
 ## Build
 
 ```bash
 cd native
-cargo test                                 # headless crates
-cargo build --manifest-path crates/synara-app/Cargo.toml
+cargo test                                 # headless crates (default members)
+cargo build -p synara-app                  # the GPUI app, binary `synara`
 ```
 
-`synara-app` is outside the workspace members so `cargo test` stays fast and
-works on machines without X11/Wayland/Vulkan development packages.
+`synara-app` is a workspace member but not a default member, so plain
+`cargo build`/`cargo test` stay fast and work on machines without
+X11/Wayland/Vulkan development packages.
+
+## Running the app
+
+```bash
+synara --url http://127.0.0.1:3773 --token "$SYNARA_AUTH_TOKEN"  # existing server
+synara --spawn ~/synara                     # supervise apps/server; home ~/.synara-native
+synara --instabox synara-native             # server in a sandbox, via port-forward
+```
+
+`--spawn` never uses the desktop apps' `~/.synara` or `~/.synara-beta`. Closing
+the window stops a spawned server (process group included) or closes the
+port-forward; an instabox sandbox keeps running until its idle timer pauses it.
 
 ## Regenerating the RPC manifest
 

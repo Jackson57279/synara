@@ -14,9 +14,16 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/native/target}"
 echo "== fmt"
 cargo fmt --all --check
 echo "== clippy"
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --all-targets -- -D warnings
+if [[ "${SYNARA_NATIVE_APP:-1}" == 1 ]]; then
+  echo "== clippy (synara-app)"
+  cargo clippy -p synara-app --all-targets -- -D warnings
+fi
 echo "== test"
-cargo test --workspace
+cargo test
+if [[ "${SYNARA_NATIVE_APP:-1}" == 1 ]]; then
+  cargo test -p synara-app
+fi
 
 echo "== manifest drift"
 tmp="$(mktemp -d)"
