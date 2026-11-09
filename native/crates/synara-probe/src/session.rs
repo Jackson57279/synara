@@ -71,29 +71,15 @@ pub async fn run(
     let instance = connected_instance(&session.state()).unwrap_or_default();
     println!("ok   session connected to instance {instance}");
 
-    let mut project = ClientCommand::project_create("Native session probe", workspace).to_value();
-    project["createWorkspaceRootIfMissing"] = serde_json::json!(true);
-    let project_id = ProjectId::from(project["projectId"].as_str().unwrap_or_default());
-    let client_command: ClientCommand = match ClientCommand::project_create("x", workspace) {
-        ClientCommand::ProjectCreate {
-            command_id,
-            created_at,
-            ..
-        } => ClientCommand::ProjectCreate {
-            command_id,
-            project_id: project_id.clone(),
-            title: "Native session probe".into(),
-            workspace_root: workspace.into(),
-            create_workspace_root_if_missing: true,
-            default_model_selection: None,
-            created_at,
-        },
-        _ => unreachable!(),
+    // One workspace per run: the server allows one project per workspace root.
+    let workspace = format!("{workspace}/session-{}", std::process::id());
+    let project =
+        ClientCommand::project_create("Native session probe", &workspace).creating_workspace_root();
+    let ClientCommand::ProjectCreate { project_id, .. } = &project else {
+        unreachable!()
     };
-    session
-        .dispatch(&client_command)
-        .await
-        .context("project.create")?;
+    let project_id: ProjectId = project_id.clone();
+    session.dispatch(&project).await.context("project.create")?;
 
     let thread = ClientCommand::thread_create(
         project_id,

@@ -190,8 +190,10 @@ async fn smoke(
     provider: &str,
     model: &str,
 ) -> Result<()> {
-    let mut project = ClientCommand::project_create("Native probe", workspace).to_value();
-    project["createWorkspaceRootIfMissing"] = json!(true);
+    let workspace = format!("{workspace}/smoke-{}", std::process::id());
+    let project = ClientCommand::project_create("Native probe", &workspace)
+        .creating_workspace_root()
+        .to_value();
     let project_id = ProjectId::from(project["projectId"].as_str().unwrap_or_default());
     let accepted = dispatch(client, project, step).await?;
     println!(

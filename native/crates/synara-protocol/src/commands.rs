@@ -140,6 +140,19 @@ impl ClientCommand {
         }
     }
 
+    /// Lets the server create a missing workspace root (`project.create` only).
+    #[must_use]
+    pub fn creating_workspace_root(mut self) -> Self {
+        if let Self::ProjectCreate {
+            create_workspace_root_if_missing,
+            ..
+        } = &mut self
+        {
+            *create_workspace_root_if_missing = true;
+        }
+        self
+    }
+
     pub fn interrupt(thread_id: ThreadId, turn_id: Option<TurnId>) -> Self {
         Self::TurnInterrupt {
             command_id: CommandId::random(),
