@@ -73,6 +73,14 @@ enum Command {
         #[arg(long, default_value = "gpt-5.5")]
         model: String,
     },
+    /// Load one thread's snapshot and print its session, latest turn, and
+    /// recent activities (where provider failures land).
+    Thread {
+        thread_id: String,
+        /// How many of the newest activities to print.
+        #[arg(long, default_value_t = 12)]
+        activities: usize,
+    },
 }
 
 #[tokio::main]
@@ -146,6 +154,21 @@ async fn probe(cli: &Cli) -> Result<()> {
     }
 
     let client = connect(cli, step).await?;
+    if let Command::Thread {
+        thread_id,
+        activities,
+    } = &cli.command
+    {
+        let result = dump_thread(
+            &client,
+            step,
+            ThreadId::from(thread_id.as_str()),
+            *activities,
+        )
+        .await;
+        client.close();
+        return result;
+    }
     let mut shell = ShellStore::new();
     let mut shell_stream = client
         .stream(tags::ORCHESTRATION_SUBSCRIBE_SHELL, json!({}))
@@ -241,6 +264,72 @@ async fn dispatch(client: &RpcClient, command: Value, step: Duration) -> Result<
     .with_context(|| format!("{kind} timed out"))?
     .with_context(|| format!("dispatch {kind}"))?;
     Ok(result)
+}
+
+async fn dump_thread(
+    client: &RpcClient,
+    step: Duration,
+    thread_id: ThreadId,
+    activities: usize,
+) -> Result<()> {
+    let mut store = ThreadStore::new(thread_id.clone());
+    let mut stream = client
+        .stream(
+            tags::ORCHESTRATION_SUBSCRIBE_THREAD,
+            serde_json::to_value(SubscribeThreadInput::new(thread_id, None))?,
+        )
+        .await?;
+    while store.status() == ThreadStatus::Loading {
+        let item: ThreadStreamItem = next_item(&mut stream, step, "thread snapshot").await?;
+        store.apply(item);
+    }
+    let thread = store.thread().context("snapshot has no thread")?;
+    println!(
+        "thread \"{}\" at sequence {}: {} messages, {} activities",
+        thread.title,
+        store.cursor().unwrap_or_default(),
+        store.messages().len(),
+        thread.activities.len()
+    );
+    match &thread.session {
+        Some(session) => println!(
+            "session status={} provider={} activeTurn={} lastError={}",
+            session.status,
+            session.provider_name.as_deref().unwrap_or("-"),
+            session
+                .active_turn_id
+                .as_ref()
+                .map(|t| t.to_string())
+                .unwrap_or("-".into()),
+            session.last_error.as_deref().unwrap_or("-")
+        ),
+        None => println!("session -"),
+    }
+    match &thread.latest_turn {
+        Some(turn) => println!(
+            "latestTurn {} state={} started={} completed={} assistant={}",
+            turn.turn_id,
+            turn.state,
+            turn.started_at.as_deref().unwrap_or("-"),
+            turn.completed_at.as_deref().unwrap_or("-"),
+            turn.assistant_message_id
+                .as_ref()
+                .map(|m| m.to_string())
+                .unwrap_or("-".into())
+        ),
+        None => println!("latestTurn -"),
+    }
+    let skip = thread.activities.len().saturating_sub(activities);
+    for activity in &thread.activities[skip..] {
+        println!(
+            "activity {} [{}] {}: {}",
+            activity.created_at, activity.tone, activity.kind, activity.summary
+        );
+        if activity.tone == "error" && !activity.payload.is_null() {
+            println!("  payload {}", activity.payload);
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
