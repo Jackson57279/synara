@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui_kit::base::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::base::TextView;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use synara_protocol::ids::{ProjectId, ThreadId};
@@ -501,12 +502,14 @@ impl Workspace {
             let rows = rows.borrow();
             match rows.get(ix) {
                 Some(TranscriptRow::Message {
+                    id,
                     role,
                     text,
                     streaming,
                     pending,
-                    ..
-                }) => message_row(*role, text, *streaming, *pending).into_any_element(),
+                }) => {
+                    message_row(id.as_str(), *role, text, *streaming, *pending).into_any_element()
+                }
                 Some(TranscriptRow::Work(entry)) => work_row(entry).into_any_element(),
                 None => div().into_any_element(),
             }
@@ -557,7 +560,13 @@ impl Workspace {
     }
 }
 
-fn message_row(role: MessageRole, text: &str, streaming: bool, pending: bool) -> impl IntoElement {
+fn message_row(
+    id: &str,
+    role: MessageRole,
+    text: &str,
+    streaming: bool,
+    pending: bool,
+) -> impl IntoElement {
     let (label, background) = match role {
         MessageRole::User => ("You", Some(palette::USER_BG)),
         MessageRole::Assistant => ("Assistant", None),
@@ -588,8 +597,26 @@ fn message_row(role: MessageRole, text: &str, streaming: bool, pending: bool) ->
                         line.child(div().text_color(rgb(palette::ACCENT)).child("streaming"))
                     }),
             )
-            .child(div().w_full().child(SharedString::from(text))),
+            .child(message_body(id, role, text)),
     )
+}
+
+/// Assistant text is Markdown (code blocks, lists, tables, links); what the
+/// user typed shows as written.
+fn message_body(id: &str, role: MessageRole, text: String) -> AnyElement {
+    match role {
+        MessageRole::Assistant => div()
+            .w_full()
+            .child(TextView::markdown(
+                SharedString::from(format!("md:{id}")),
+                text,
+            ))
+            .into_any_element(),
+        MessageRole::User | MessageRole::System => div()
+            .w_full()
+            .child(SharedString::from(text))
+            .into_any_element(),
+    }
 }
 
 /// One work-log line: a tone dot, the label, and a muted detail. Failure
