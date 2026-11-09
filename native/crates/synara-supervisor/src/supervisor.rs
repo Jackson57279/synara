@@ -354,8 +354,9 @@ impl Runner {
                 .clear();
             let reason = match self.spawn() {
                 Ok((mut child, owner)) => {
+                    let pid = child.id();
                     let outcome = self.watch(&mut child, &mut control).await;
-                    stop_child(&mut child, owner, self.spec.stop_timeout).await;
+                    stop_child(&mut child, pid, owner, self.spec.stop_timeout).await;
                     match outcome {
                         Outcome::Stop => break,
                         Outcome::Restart => {
@@ -435,6 +436,10 @@ impl Runner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // Its own process group, so a forced stop also reaches the provider
+        // processes the server started instead of orphaning them.
+        #[cfg(unix)]
+        command.process_group(0);
         let mut child = command.spawn()?;
         tracing::info!(pid = child.id(), port = self.port, "server spawned");
         let owner = child.stdin.take();
@@ -497,18 +502,54 @@ impl Runner {
     }
 }
 
-/// Closes stdin so the server shuts itself down; kills it if that takes
-/// longer than `timeout`.
-async fn stop_child(child: &mut Child, owner: Option<ChildStdin>, timeout: Duration) {
+/// Grace period between SIGTERM and SIGKILL for a forced stop.
+const TERM_GRACE: Duration = Duration::from_secs(3);
+
+/// Closes stdin so the server shuts itself down. If that takes longer than
+/// `timeout`, terminates the server's whole process group, then kills it.
+async fn stop_child(
+    child: &mut Child,
+    pid: Option<u32>,
+    owner: Option<ChildStdin>,
+    timeout: Duration,
+) {
     drop(owner);
     if let Ok(Some(_)) = child.try_wait() {
         return;
     }
-    match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(_) => {}
-        Err(_) => {
-            tracing::warn!(pid = child.id(), "server ignored stdin EOF; killing");
-            let _ = child.kill().await;
+    if tokio::time::timeout(timeout, child.wait()).await.is_ok() {
+        return;
+    }
+    tracing::warn!(
+        ?pid,
+        ?timeout,
+        "server did not exit after stdin EOF; terminating its process group"
+    );
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        signal_group(pid, Signal::SIGTERM);
+        let exited = tokio::time::timeout(TERM_GRACE, child.wait()).await.is_ok();
+        // Stragglers in the group get SIGKILL even when the leader exited.
+        signal_group(pid, Signal::SIGKILL);
+        if exited {
+            return;
+        }
+    }
+    let _ = child.kill().await;
+}
+
+#[cfg(unix)]
+use nix::sys::signal::Signal;
+
+#[cfg(unix)]
+fn signal_group(pid: u32, signal: Signal) {
+    let Ok(pgid) = i32::try_from(pid) else {
+        return;
+    };
+    match nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pgid), signal) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+        Err(error) => {
+            tracing::warn!(pgid, ?signal, %error, "signalling the server process group failed");
         }
     }
 }
@@ -672,6 +713,76 @@ print("owner gone", flush=True)
             .is_none());
         let logged = tokio::fs::read_to_string(&log).await.unwrap();
         assert!(logged.contains("listening"), "{logged}");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// Alive and not a zombie.
+    #[cfg(unix)]
+    fn alive(pid: i32) -> bool {
+        let exists =
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None::<Signal>).is_ok();
+        let zombie = std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit(") ")
+                .next()
+                .is_some_and(|rest| rest.starts_with('Z'))
+        });
+        exists && !zombie
+    }
+
+    /// A server that ignores stdin EOF and SIGTERM and has a child of its own:
+    /// a forced stop must take down the whole process group.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn forced_stop_reaches_the_whole_process_group() {
+        if !has_python() {
+            eprintln!("skipping: python3 not found");
+            return;
+        }
+        let home = temp_home("group");
+        let pid_file = home.join("grandchild.pid");
+        let server = home.join("stubborn.py");
+        std::fs::write(
+            &server,
+            FAKE_SERVER.replace(
+                "sys.stdin.read()",
+                "sys.stdin.read(); import time; time.sleep(300)",
+            ),
+        )
+        .unwrap();
+        let script = format!(
+            "sleep 300 & echo $! > '{}'; trap '' TERM; exec python3 '{}'",
+            pid_file.display(),
+            server.display()
+        );
+        let command = ServerCommand {
+            program: "sh".into(),
+            args: vec!["-c".into(), script],
+            cwd: None,
+            env: Vec::new(),
+        };
+        let mut spec = ServerSpec::new(command, &home);
+        spec.stop_timeout = Duration::from_millis(300);
+        fast(&mut spec);
+        let supervisor = Supervisor::start(spec).await.unwrap();
+        supervisor
+            .wait_ready(Duration::from_secs(20))
+            .await
+            .unwrap();
+        let grandchild: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(alive(grandchild));
+        supervisor.stop().await;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while alive(grandchild) {
+            assert!(
+                Instant::now() < deadline,
+                "grandchild {grandchild} survived the stop"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         let _ = std::fs::remove_dir_all(home);
     }
 
