@@ -308,6 +308,18 @@ async fn hold_adopted(
     status.send_replace(ServerStatus::Stopped);
 }
 
+/// How long a failed start waits for its output to drain before summarising.
+const OUTPUT_DRAIN: Duration = Duration::from_secs(1);
+
+struct Spawned {
+    child: Child,
+    /// Held outside the `Child` because `Child::wait` closes stdin, which the
+    /// server reads as its owner exiting.
+    owner: Option<ChildStdin>,
+    /// Finishes when stdout and stderr reach EOF.
+    output: JoinHandle<()>,
+}
+
 enum Outcome {
     Stop,
     Restart,
@@ -353,7 +365,11 @@ impl Runner {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clear();
             let reason = match self.spawn() {
-                Ok((mut child, owner)) => {
+                Ok(Spawned {
+                    mut child,
+                    owner,
+                    output,
+                }) => {
                     let pid = child.id();
                     let outcome = self.watch(&mut child, &mut control).await;
                     stop_child(&mut child, pid, owner, self.spec.stop_timeout).await;
@@ -363,7 +379,13 @@ impl Runner {
                             self.policy.reset();
                             continue;
                         }
-                        Outcome::Failed(reason) => reason,
+                        Outcome::Failed(reason) => {
+                            // Let the collector drain the dead process's pipes so
+                            // the failure summary includes its last words. Bounded:
+                            // an orphaned grandchild can hold the pipes open.
+                            let _ = tokio::time::timeout(OUTPUT_DRAIN, output).await;
+                            reason
+                        }
                     }
                 }
                 Err(error) => format!(
@@ -409,10 +431,7 @@ impl Runner {
         self.set(ServerStatus::Stopped);
     }
 
-    /// Returns the child and its stdin. Stdin is held outside the `Child`
-    /// because `Child::wait` closes it, which the server reads as its owner
-    /// exiting.
-    fn spawn(&self) -> std::io::Result<(Child, Option<ChildStdin>)> {
+    fn spawn(&self) -> std::io::Result<Spawned> {
         let spec = &self.spec;
         let mut command = Command::new(&spec.command.program);
         command.args(&spec.command.args);
@@ -451,12 +470,16 @@ impl Runner {
         if let Some(stderr) = child.stderr.take() {
             tokio::spawn(pump(stderr, chunks));
         }
-        tokio::spawn(collect(
+        let output = tokio::spawn(collect(
             chunks_rx,
             self.tail.clone(),
             self.spec.log_file.clone(),
         ));
-        Ok((child, owner))
+        Ok(Spawned {
+            child,
+            owner,
+            output,
+        })
     }
 
     async fn watch(
