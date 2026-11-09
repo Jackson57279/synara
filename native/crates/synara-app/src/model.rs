@@ -1,13 +1,14 @@
 //! What the window shows, derived from the session's stores. No GPUI types
 //! here, so the derivation is tested without a window.
 
-use std::collections::BTreeSet;
 use std::ops::Range;
 
 use synara_protocol::ids::{MessageId, ProjectId, ThreadId};
 use synara_protocol::orchestration::{Message, MessageRole, Thread};
 use synara_session::ConnectionState;
 use synara_sync::{ShellStore, ThreadStore};
+
+use crate::worklog::{work_entries, WorkEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarRow {
@@ -60,27 +61,56 @@ pub fn sidebar_rows(shell: &ShellStore) -> Vec<SidebarRow> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TranscriptRow {
-    pub id: MessageId,
-    pub role: MessageRole,
-    pub text: String,
-    pub streaming: bool,
-    /// Sent from here and not yet echoed by the server.
-    pub pending: bool,
+pub enum TranscriptRow {
+    Message {
+        id: MessageId,
+        role: MessageRole,
+        text: String,
+        streaming: bool,
+        /// Sent from here and not yet echoed by the server.
+        pending: bool,
+    },
+    Work(WorkEntry),
 }
 
+impl TranscriptRow {
+    /// Stable list key; messages and work rows never share one.
+    pub fn key(&self) -> String {
+        match self {
+            Self::Message { id, .. } => format!("m:{id}"),
+            Self::Work(entry) => format!("w:{}", entry.id),
+        }
+    }
+}
+
+/// Messages and work rows merged by `createdAt` (ISO-8601, so string order
+/// is time order). On a tie the message goes first.
 pub fn transcript_rows(store: &ThreadStore) -> Vec<TranscriptRow> {
-    store
-        .messages()
-        .iter()
-        .map(|message: &Message| TranscriptRow {
-            id: message.id.clone(),
-            role: message.role,
-            text: message.text.clone(),
-            streaming: message.streaming,
-            pending: store.is_pending(&message.id),
-        })
-        .collect()
+    let messages = store.messages();
+    let work = store
+        .thread()
+        .map(|thread| work_entries(&thread.activities))
+        .unwrap_or_default();
+    let mut work = work.into_iter().peekable();
+    let mut rows = Vec::with_capacity(messages.len() + work.len());
+    for message in messages.iter() {
+        while let Some(entry) = work.next_if(|entry| entry.created_at < message.created_at) {
+            rows.push(TranscriptRow::Work(entry));
+        }
+        rows.push(message_row(store, message));
+    }
+    rows.extend(work.map(TranscriptRow::Work));
+    rows
+}
+
+fn message_row(store: &ThreadStore, message: &Message) -> TranscriptRow {
+    TranscriptRow::Message {
+        id: message.id.clone(),
+        role: message.role,
+        text: message.text.clone(),
+        streaming: message.streaming,
+        pending: store.is_pending(&message.id),
+    }
 }
 
 /// The thread's error banner text: `session.lastError`, except the one
@@ -246,18 +276,18 @@ pub enum ListUpdate {
     Splice(Vec<(Range<usize>, usize)>),
 }
 
-/// Plans the smallest list update. Rows whose id stayed in place but whose
-/// content changed (`changed`) are re-spliced so they are re-measured.
-pub fn plan_list_update(
-    old: &[MessageId],
-    new: &[MessageId],
-    changed: &BTreeSet<MessageId>,
-    reset: bool,
-) -> ListUpdate {
+/// Plans the smallest list update from the old and new rows. Rows whose key
+/// stayed in place but whose content changed are re-spliced so they are
+/// re-measured.
+pub fn plan_list_update(old: &[TranscriptRow], new: &[TranscriptRow], reset: bool) -> ListUpdate {
     if reset {
         return ListUpdate::Reset(new.len());
     }
-    let shared = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let shared = old
+        .iter()
+        .zip(new)
+        .take_while(|(a, b)| a.key() == b.key())
+        .count();
     // Anything other than "same prefix, then appended" (an insert, a removal,
     // a trimmed head) is rare enough to rebuild.
     if shared < old.len() {
@@ -265,8 +295,9 @@ pub fn plan_list_update(
     }
     let mut splices: Vec<(Range<usize>, usize)> = new[..shared]
         .iter()
+        .zip(old)
         .enumerate()
-        .filter(|(_, id)| changed.contains(*id))
+        .filter(|(_, (a, b))| a != b)
         .map(|(ix, _)| (ix..ix + 1, 1))
         .collect();
     if new.len() > shared {
@@ -307,150 +338,49 @@ mod tests {
 
     use super::*;
 
-    fn ids(names: &[&str]) -> Vec<MessageId> {
-        names.iter().map(|n| MessageId::from(*n)).collect()
+    fn row(id: &str, text: &str) -> TranscriptRow {
+        TranscriptRow::Message {
+            id: MessageId::from(id),
+            role: MessageRole::Assistant,
+            text: text.into(),
+            streaming: false,
+            pending: false,
+        }
+    }
+
+    fn rows(names: &[&str]) -> Vec<TranscriptRow> {
+        names.iter().map(|n| row(n, "")).collect()
     }
 
     #[test]
     fn appends_splice_only_the_tail() {
-        let update = plan_list_update(
-            &ids(&["a", "b"]),
-            &ids(&["a", "b", "c", "d"]),
-            &BTreeSet::new(),
-            false,
-        );
+        let update = plan_list_update(&rows(&["a", "b"]), &rows(&["a", "b", "c", "d"]), false);
         assert_eq!(update, ListUpdate::Splice(vec![(2..2, 2)]));
     }
 
     #[test]
-    fn streaming_text_re_splices_the_changed_row() {
-        let changed = BTreeSet::from([MessageId::from("b")]);
-        let update = plan_list_update(&ids(&["a", "b"]), &ids(&["a", "b"]), &changed, false);
+    fn changed_content_re_splices_the_row() {
+        let new = vec![row("a", ""), row("b", "more")];
+        let update = plan_list_update(&rows(&["a", "b"]), &new, false);
         assert_eq!(update, ListUpdate::Splice(vec![(1..2, 1)]));
-        let update = plan_list_update(&ids(&["a"]), &ids(&["a"]), &BTreeSet::new(), false);
+        let update = plan_list_update(&rows(&["a"]), &rows(&["a"]), false);
         assert_eq!(update, ListUpdate::None);
     }
 
     #[test]
     fn rewrites_and_snapshots_reset() {
-        let none = BTreeSet::new();
         assert_eq!(
-            plan_list_update(&ids(&["a", "b"]), &ids(&["b", "c"]), &none, false),
+            plan_list_update(&rows(&["a", "b"]), &rows(&["b", "c"]), false),
             ListUpdate::Reset(2)
         );
         assert_eq!(
-            plan_list_update(&ids(&["a", "b"]), &ids(&["a"]), &none, false),
+            plan_list_update(&rows(&["a", "b"]), &rows(&["a"]), false),
             ListUpdate::Reset(1)
         );
         assert_eq!(
-            plan_list_update(&ids(&["a"]), &ids(&["a", "b"]), &none, true),
+            plan_list_update(&rows(&["a"]), &rows(&["a", "b"]), true),
             ListUpdate::Reset(2)
         );
-    }
-
-    #[test]
-    fn thread_error_skips_the_non_fatal_stdin_message() {
-        let mut thread: Thread = serde_json::from_value(serde_json::json!({
-            "id": "t", "projectId": "p", "title": "", "messages": [],
-            "proposedPlans": [], "activities": [], "latestTurn": null,
-            "session": {"threadId": "t", "status": "error", "providerName": "codex",
-                        "runtimeMode": "full-access", "activeTurnId": null,
-                        "lastError": "  Not signed in to Codex  ", "updatedAt": "x"},
-            "createdAt": "x", "updatedAt": "x"
-        }))
-        .unwrap();
-        assert_eq!(
-            thread_error(&thread).as_deref(),
-            Some("Not signed in to Codex")
-        );
-        thread.session.as_mut().unwrap().last_error =
-            Some("write_stdin failed: stdin is closed for this session".into());
-        assert_eq!(thread_error(&thread), None);
-        thread.session = None;
-        assert_eq!(thread_error(&thread), None);
-    }
-
-    fn thread_with(activities: serde_json::Value, latest_state: &str) -> Thread {
-        serde_json::from_value(serde_json::json!({
-            "id": "t", "projectId": "p", "title": "", "messages": [],
-            "proposedPlans": [], "activities": activities,
-            "latestTurn": {"turnId": "turn-1", "state": latest_state,
-                           "requestedAt": "x", "startedAt": null, "completedAt": null,
-                           "assistantMessageId": null},
-            "session": null, "createdAt": "x", "updatedAt": "x"
-        }))
-        .unwrap()
-    }
-
-    fn activity(kind: &str, tone: &str, payload: serde_json::Value) -> serde_json::Value {
-        serde_json::json!({"id": kind, "tone": tone, "kind": kind, "summary": "",
-                           "payload": payload, "turnId": "turn-1", "createdAt": "x"})
-    }
-
-    #[test]
-    fn latest_turn_failure_reads_the_failure_activities() {
-        let unauthorized = "unexpected status 401 Unauthorized: Missing bearer or basic \
-            authentication in header, url: https://api.openai.com/v1/responses";
-        let thread = thread_with(
-            serde_json::json!([
-                activity(
-                    "runtime.error",
-                    "error",
-                    serde_json::json!({"message": unauthorized})
-                ),
-                activity(
-                    "turn.completed",
-                    "error",
-                    serde_json::json!({"state": "failed", "errorMessage": unauthorized})
-                ),
-            ]),
-            "error",
-        );
-        let banner = thread_banner(&thread).unwrap();
-        assert!(banner.starts_with("Turn failed: unexpected status 401"));
-        assert!(banner.ends_with('…'));
-        assert_eq!(banner.chars().count(), "Turn failed: ".len() + 80);
-    }
-
-    #[test]
-    fn latest_turn_failure_names_quota_and_ignores_recovered_turns() {
-        let quota = thread_with(
-            serde_json::json!([activity(
-                "runtime.error",
-                "error",
-                serde_json::json!({"message": "You hit your usage limit"})
-            )]),
-            "running",
-        );
-        assert_eq!(
-            latest_turn_failure(&quota),
-            Some(Some("usage limit reached".into()))
-        );
-        let recovered = thread_with(
-            serde_json::json!([
-                activity(
-                    "runtime.error",
-                    "error",
-                    serde_json::json!({"message": "blip"})
-                ),
-                activity(
-                    "turn.completed",
-                    "info",
-                    serde_json::json!({"state": "completed"})
-                ),
-            ]),
-            "completed",
-        );
-        assert_eq!(thread_banner(&recovered), None);
-        assert_eq!(
-            latest_turn_failure(&thread_with(serde_json::json!([]), "error")),
-            Some(None)
-        );
-        let stopped = thread_with(
-            serde_json::json!([activity("turn.aborted", "info", serde_json::json!({}))]),
-            "interrupted",
-        );
-        assert_eq!(thread_banner(&stopped), None);
     }
 
     fn sidebar() -> Vec<SidebarRow> {

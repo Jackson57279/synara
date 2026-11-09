@@ -2,13 +2,12 @@
 //! transcript, a composer, and a status bar.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use gpui_kit::base::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use synara_protocol::ids::{MessageId, ProjectId, ThreadId};
+use synara_protocol::ids::{ProjectId, ThreadId};
 use synara_protocol::orchestration::{MessageRole, ModelSelection};
 use synara_session::SessionEvent;
 use tokio::sync::mpsc;
@@ -21,6 +20,7 @@ use crate::model::{
     connection_label, current_project, nth_thread, plan_list_update, sidebar_rows, step_thread,
     thread_banner, transcript_rows, ListUpdate, SidebarRow, TranscriptRow,
 };
+use crate::worklog::{Tone, WorkEntry};
 
 // One action per web command id this window handles; `keymap` maps the
 // server's resolved keybindings onto them.
@@ -78,6 +78,7 @@ mod palette {
     pub const USER_BG: u32 = 0x24272d;
     pub const ACCENT: u32 = 0x6ea8fe;
     pub const WARN: u32 = 0xf0a35e;
+    pub const ERROR: u32 = 0xf07178;
 }
 
 pub struct Workspace {
@@ -86,7 +87,6 @@ pub struct Workspace {
     selected: Option<ThreadId>,
     /// Shared with the list's render callback, which outlives `render`.
     transcript: Rc<RefCell<Vec<TranscriptRow>>>,
-    transcript_ids: Vec<MessageId>,
     list_state: ListState,
     composer: Entity<TextareaState>,
     status: (String, bool),
@@ -159,7 +159,6 @@ impl Workspace {
             sidebar: Vec::new(),
             selected: None,
             transcript: Rc::default(),
-            transcript_ids: Vec::new(),
             list_state,
             composer,
             status: ("Starting…".into(), false),
@@ -187,7 +186,7 @@ impl Workspace {
             BackendEvent::Session(SessionEvent::Shell(_)) => self.refresh_sidebar(),
             BackendEvent::Session(SessionEvent::Thread { thread_id, change }) => {
                 if self.selected.as_ref() == Some(&thread_id) {
-                    self.refresh_transcript(change.reset, &change.messages);
+                    self.refresh_transcript(change.reset);
                 }
             }
             BackendEvent::Session(SessionEvent::ThreadFailed { thread_id, error }) => {
@@ -255,7 +254,7 @@ impl Workspace {
             .unwrap_or_default();
     }
 
-    fn refresh_transcript(&mut self, reset: bool, changed: &BTreeSet<MessageId>) {
+    fn refresh_transcript(&mut self, reset: bool) {
         let Some(thread_id) = self.selected.clone() else {
             return;
         };
@@ -274,8 +273,8 @@ impl Workspace {
             .flatten()
             .unwrap_or_default();
         self.thread_error = error;
-        let ids: Vec<MessageId> = rows.iter().map(|row| row.id.clone()).collect();
-        match plan_list_update(&self.transcript_ids, &ids, changed, reset) {
+        let update = plan_list_update(&self.transcript.borrow(), &rows, reset);
+        match update {
             ListUpdate::None => {}
             ListUpdate::Reset(count) => self.list_state.reset(count),
             ListUpdate::Splice(splices) => {
@@ -285,7 +284,6 @@ impl Workspace {
             }
         }
         *self.transcript.borrow_mut() = rows;
-        self.transcript_ids = ids;
         self.working = working;
     }
 
@@ -295,8 +293,8 @@ impl Workspace {
         }
         self.backend.open_thread(&thread_id);
         self.selected = Some(thread_id);
-        self.transcript_ids.clear();
-        self.refresh_transcript(true, &BTreeSet::new());
+        self.transcript.borrow_mut().clear();
+        self.refresh_transcript(true);
         self.notice = None;
     }
 
@@ -502,7 +500,14 @@ impl Workspace {
         list(self.list_state.clone(), move |ix, _, _| {
             let rows = rows.borrow();
             match rows.get(ix) {
-                Some(row) => message_row(row).into_any_element(),
+                Some(TranscriptRow::Message {
+                    role,
+                    text,
+                    streaming,
+                    pending,
+                    ..
+                }) => message_row(*role, text, *streaming, *pending).into_any_element(),
+                Some(TranscriptRow::Work(entry)) => work_row(entry).into_any_element(),
                 None => div().into_any_element(),
             }
         })
@@ -552,14 +557,14 @@ impl Workspace {
     }
 }
 
-fn message_row(row: &TranscriptRow) -> impl IntoElement {
-    let (label, background) = match row.role {
+fn message_row(role: MessageRole, text: &str, streaming: bool, pending: bool) -> impl IntoElement {
+    let (label, background) = match role {
         MessageRole::User => ("You", Some(palette::USER_BG)),
         MessageRole::Assistant => ("Assistant", None),
         MessageRole::System => ("System", None),
     };
-    let mut text = row.text.clone();
-    if row.streaming && text.is_empty() {
+    let mut text = text.to_owned();
+    if streaming && text.is_empty() {
         text = "…".into();
     }
     div().w_full().px_4().py_1().child(
@@ -578,12 +583,64 @@ fn message_row(row: &TranscriptRow) -> impl IntoElement {
                     .gap_2()
                     .text_color(rgb(palette::MUTED))
                     .child(label)
-                    .when(row.pending, |line| line.child("sending…"))
-                    .when(row.streaming, |line| {
+                    .when(pending, |line| line.child("sending…"))
+                    .when(streaming, |line| {
                         line.child(div().text_color(rgb(palette::ACCENT)).child("streaming"))
                     }),
             )
             .child(div().w_full().child(SharedString::from(text))),
+    )
+}
+
+/// One work-log line: a tone dot, the label, and a muted detail. Failure
+/// rows add the interruption sentence in the warning colour.
+fn work_row(entry: &WorkEntry) -> impl IntoElement {
+    let dot = match entry.tone {
+        Tone::Error => palette::ERROR,
+        Tone::Tool => palette::ACCENT,
+        Tone::Thinking | Tone::Info => palette::MUTED,
+    };
+    div().w_full().px_4().child(
+        div()
+            .flex()
+            .flex_col()
+            .px_3()
+            .py_0p5()
+            .text_sm()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(div().size(px(6.)).rounded_full().bg(rgb(dot)))
+                    .child(
+                        div()
+                            .text_color(rgb(if entry.tone == Tone::Error {
+                                palette::ERROR
+                            } else {
+                                palette::MUTED
+                            }))
+                            .child(SharedString::from(entry.label.clone())),
+                    ),
+            )
+            .when_some(entry.detail.clone(), |row, detail| {
+                row.child(
+                    div()
+                        .pl_4()
+                        .text_color(rgb(palette::MUTED))
+                        .truncate()
+                        .child(SharedString::from(detail)),
+                )
+            })
+            .when_some(entry.failure.clone(), |row, failure| {
+                row.child(
+                    div()
+                        .pl_4()
+                        .text_color(rgb(palette::WARN))
+                        .child(SharedString::from(failure)),
+                )
+            }),
     )
 }
 

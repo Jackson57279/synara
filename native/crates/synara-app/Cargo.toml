@@ -12,6 +12,7 @@ name = "synara"
 path = "src/main.rs"
 
 [dependencies]
+serde_json.workspace = true
 gpui-kit = "0.9.0"
 anyhow.workspace = true
 clap.workspace = true
@@ -25,8 +26,6 @@ synara-session.workspace = true
 synara-supervisor.workspace = true
 synara-instabox.workspace = true
 
-[dev-dependencies]
-serde_json.workspace = true
 
 [lints]
 workspace = true

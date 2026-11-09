@@ -9,6 +9,7 @@
 mod backend;
 mod keymap;
 mod model;
+mod worklog;
 mod workspace;
 
 use std::path::PathBuf;
