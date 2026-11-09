@@ -6,6 +6,10 @@
 //! synara --instabox synara-native                 # a server in a sandbox
 //! ```
 
+// Release builds on Windows are GUI apps: no console window opens with them.
+// Debug builds keep the console so logs and `--help` stay visible.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod backend;
 mod keymap;
 mod model;
@@ -56,7 +60,8 @@ impl Cli {
         if let Some(repo) = self.spawn {
             let home = match self.home {
                 Some(home) => home,
-                None => PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?)
+                None => std::env::home_dir()
+                    .context("could not find the home directory")?
                     .join(".synara-native"),
             };
             return Ok(Target::Spawn { repo, home });
@@ -65,6 +70,18 @@ impl Cli {
             url: self.url,
             token: self.token,
         })
+    }
+}
+
+actions!(synara, [Quit]);
+
+/// macOS shows an app menu even when it is empty; give it the standard Quit
+/// item so cmd-q works. Other platforms quit when the last window closes.
+fn install_app_menu(cx: &mut App) {
+    cx.on_action(|_: &Quit, cx| cx.quit());
+    if cfg!(target_os = "macos") {
+        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        cx.set_menus([Menu::new("Synara").items([MenuItem::action("Quit Synara", Quit)])]);
     }
 }
 
@@ -80,6 +97,7 @@ fn main() -> Result<()> {
 
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
+        install_app_menu(cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
