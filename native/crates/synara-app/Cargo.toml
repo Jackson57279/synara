@@ -25,5 +25,8 @@ synara-session.workspace = true
 synara-supervisor.workspace = true
 synara-instabox.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

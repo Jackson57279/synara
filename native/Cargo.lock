@@ -6383,6 +6383,7 @@ dependencies = [
  "anyhow",
  "clap",
  "gpui-kit",
+ "serde_json",
  "synara-instabox",
  "synara-protocol",
  "synara-session",

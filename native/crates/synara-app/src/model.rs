@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 
 use synara_protocol::ids::{MessageId, ProjectId, ThreadId};
-use synara_protocol::orchestration::{Message, MessageRole};
+use synara_protocol::orchestration::{Message, MessageRole, Thread};
 use synara_session::ConnectionState;
 use synara_sync::{ShellStore, ThreadStore};
 
@@ -81,6 +81,17 @@ pub fn transcript_rows(store: &ThreadStore) -> Vec<TranscriptRow> {
             pending: store.is_pending(&message.id),
         })
         .collect()
+}
+
+/// The thread's error banner text: `session.lastError`, except the one
+/// message the web client treats as non-fatal
+/// (`normalizeThreadErrorMessage` in `apps/web/src/storeNormalization.ts`).
+pub fn thread_error(thread: &Thread) -> Option<String> {
+    let error = thread.session.as_ref()?.last_error.as_deref()?.trim();
+    let non_fatal = error
+        .to_lowercase()
+        .contains("write_stdin failed: stdin is closed for this session");
+    (!error.is_empty() && !non_fatal).then(|| error.to_owned())
 }
 
 /// How to bring a `ListState` from `old` rows to `new` rows.
@@ -195,6 +206,28 @@ mod tests {
             plan_list_update(&ids(&["a"]), &ids(&["a", "b"]), &none, true),
             ListUpdate::Reset(2)
         );
+    }
+
+    #[test]
+    fn thread_error_skips_the_non_fatal_stdin_message() {
+        let mut thread: Thread = serde_json::from_value(serde_json::json!({
+            "id": "t", "projectId": "p", "title": "", "messages": [],
+            "proposedPlans": [], "activities": [], "latestTurn": null,
+            "session": {"threadId": "t", "status": "error", "providerName": "codex",
+                        "runtimeMode": "full-access", "activeTurnId": null,
+                        "lastError": "  Not signed in to Codex  ", "updatedAt": "x"},
+            "createdAt": "x", "updatedAt": "x"
+        }))
+        .unwrap();
+        assert_eq!(
+            thread_error(&thread).as_deref(),
+            Some("Not signed in to Codex")
+        );
+        thread.session.as_mut().unwrap().last_error =
+            Some("write_stdin failed: stdin is closed for this session".into());
+        assert_eq!(thread_error(&thread), None);
+        thread.session = None;
+        assert_eq!(thread_error(&thread), None);
     }
 
     #[test]

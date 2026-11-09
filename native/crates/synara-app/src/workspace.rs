@@ -15,8 +15,8 @@ use tokio::sync::mpsc;
 
 use crate::backend::{Backend, BackendEvent};
 use crate::model::{
-    connection_label, plan_list_update, sidebar_rows, transcript_rows, ListUpdate, SidebarRow,
-    TranscriptRow,
+    connection_label, plan_list_update, sidebar_rows, thread_error, transcript_rows, ListUpdate,
+    SidebarRow, TranscriptRow,
 };
 
 /// Used when a project has no default model of its own.
@@ -47,6 +47,8 @@ pub struct Workspace {
     status: (String, bool),
     notice: Option<String>,
     working: bool,
+    /// The selected thread's error banner.
+    thread_error: Option<String>,
     _subscriptions: Vec<Subscription>,
     _pump: Task<()>,
 }
@@ -112,6 +114,7 @@ impl Workspace {
             status: ("Starting…".into(), false),
             notice: None,
             working: false,
+            thread_error: None,
             _subscriptions: vec![submit, quit],
             _pump: pump,
         }
@@ -151,17 +154,21 @@ impl Workspace {
         let Some(thread_id) = self.selected.clone() else {
             return;
         };
-        let (rows, working) = self
+        let (rows, working, error) = self
             .backend
             .with_session(|session| {
                 let state = session.state();
-                state
-                    .threads
-                    .get(&thread_id)
-                    .map(|store| (transcript_rows(store), store.is_working()))
+                state.threads.get(&thread_id).map(|store| {
+                    (
+                        transcript_rows(store),
+                        store.is_working(),
+                        store.thread().and_then(thread_error),
+                    )
+                })
             })
             .flatten()
             .unwrap_or_default();
+        self.thread_error = error;
         let ids: Vec<MessageId> = rows.iter().map(|row| row.id.clone()).collect();
         match plan_list_update(&self.transcript_ids, &ids, changed, reset) {
             ListUpdate::None => {}
@@ -494,6 +501,20 @@ impl Render for Workspace {
                     .min_w_0()
                     .child(self.render_header(cx))
                     .child(self.render_transcript())
+                    .when_some(self.thread_error.clone(), |column, error| {
+                        column.child(
+                            div()
+                                .mx_3()
+                                .mb_2()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(rgb(palette::WARN))
+                                .text_color(rgb(palette::WARN))
+                                .child(SharedString::from(error)),
+                        )
+                    })
                     .child(
                         div()
                             .p_3()
