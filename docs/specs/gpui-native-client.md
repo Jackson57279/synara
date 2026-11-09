@@ -360,6 +360,7 @@ Port `apps/desktop/src/main.ts` and `apps/server/src/desktopParentLifetime.ts` e
 | Migration-recovery marker (`userdata/state.sqlite.migration-recovery.json`) blocks the start                                                                                        | done                                              |
 | Adopt a healthy server on a fixed port instead of spawning                                                                                                                          | done (not restarted or stopped by the supervisor) |
 | Own process group on Unix; after the stop timeout, SIGTERM then SIGKILL the whole group so provider children are not orphaned                                                       | done, covered by a test                           |
+| Windows: no console window and its own process group; after the stop timeout, `taskkill /PID <pid> /T /F` on the tree (the workspace forbids `unsafe`, so no Job Object FFI)        | done, type-checked; not run on Windows            |
 | Bundled Node entry, fd3 capability pipe, `UV_THREADPOOL_SIZE`, `/api/desktop/shutdown`, Windows job objects                                                                         | not started                                       |
 
 **Known server issue (reported, not changed here):** when stdin closes while a Codex provider session is running, the server logs `Desktop owner connection closed; shutting down backend` but neither exits nor hits its own 20 s owner-lost watchdog within 25 s, so the supervisor has to escalate to the process group. With no provider session it exits in about a second. Reproduce with `synara-probe --spawn <repo> session` (hangs) and `--spawn <repo> smoke` (clean).
@@ -572,6 +573,14 @@ The box is a development convenience, not a dependency: every script also runs o
 Caveats: the native client implements a subset of the web UI; Electron's idle CPU is mostly its animated home background under software rendering; the two servers differ (Electron runs the bundled build on Electron-as-Node, native `--spawn` runs `apps/server` source on bun); readiness is screenshot-sampled (about ±150 ms).
 
 The Electron artifact from `main` crashed at launch until its staged `betterwright` package was repaired: in the hoisted staged install `patches/betterwright@2.7.3.patch` applies at an offset and nests the `./guard-proxy` export inside `./capture`, and the staged-patch check only looks for the added lines.
+
+### 15.1 Windows and macOS
+
+The client builds for Windows (MSVC) and macOS (Apple silicon and Intel, merged into a universal binary). `native/scripts/build-windows-zip.ps1` and `native/scripts/build-macos-app.sh` package them, and `.github/workflows/native-client.yml` runs clippy, tests, release builds, and packaging on `windows-2022` and `macos-15`, with a Linux check job. Release builds have to run on their own platform: GPUI precompiles shaders with `fxc.exe` (Windows SDK) and the Xcode Metal compiler.
+
+Platform differences in the client: Windows release builds use the GUI subsystem (no console); macOS gets an app menu with Quit on cmd-q and `mod` key bindings map to cmd; the default `--spawn` home comes from `std::env::home_dir`. Packages are unsigned; the macOS bundle is ad-hoc signed and not notarized.
+
+Verified so far: the whole workspace, `synara-app` included, passes `clippy -D warnings` for `x86_64-pc-windows-gnu`, and a debug `synara.exe` links. Under Wine 11.20 it creates a Direct3D 11 device through DXVK, then stops because Wine's `IDWriteFontSet::GetMatchingFonts` is a stub and GPUI cannot load a font. macOS has not been compiled: its build scripts need the Apple SDK. Both platforms are unverified until the workflow runs on real runners.
 
 ## 16. References
 

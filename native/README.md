@@ -40,6 +40,25 @@ synara --instabox synara-native             # server in a sandbox, via port-forw
 the window stops a spawned server (process group included) or closes the
 port-forward; an instabox sandbox keeps running until its idle timer pauses it.
 
+## Platforms and packages
+
+| Platform | Build host                          | Package script                  | Output                                         |
+| -------- | ----------------------------------- | ------------------------------- | ---------------------------------------------- |
+| Linux    | glibc ≤ 2.36 (e.g. `rust:bookworm`) | `scripts/build-appimage.sh`     | `Synara-Native-<v>-x86_64.AppImage`            |
+| Windows  | Windows, MSVC + Windows SDK         | `scripts/build-windows-zip.ps1` | `Synara-Native-<v>-windows-x64.zip`            |
+| macOS    | macOS with Xcode                    | `scripts/build-macos-app.sh`    | `Synara-Native-<v>-macos-universal.zip` (.app) |
+
+`.github/workflows/native-client.yml` checks, tests, and packages all three.
+Release builds need the platform's own shader compiler (`fxc.exe` on Windows,
+`xcrun metal` on macOS), so they cannot be cross-built from Linux; a
+`x86_64-pc-windows-gnu` debug build links but is only good for type checks.
+Wine cannot run the Windows build: its DirectWrite stubs
+`IDWriteFontSet::GetMatchingFonts`, which GPUI needs to load any font.
+
+Packages are unsigned. The macOS app is ad-hoc signed but not notarized, so a
+downloaded copy needs right-click > Open once. On Windows, release builds open
+without a console window; on macOS, cmd-q quits.
+
 ## Regenerating the RPC manifest
 
 ```bash
