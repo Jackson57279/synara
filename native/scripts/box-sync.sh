@@ -3,7 +3,8 @@
 #
 # Usage: native/scripts/box-sync.sh <box> [branch]
 # Sends only commits the box does not have yet when it already has a checkout;
-# the first run sends a full bundle. Uncommitted changes are not sent.
+# the first run sends a full bundle. Uncommitted changes are not sent, and
+# local edits inside the box's checkout are discarded (history rewrites are fine).
 set -euo pipefail
 
 box="${1:?usage: box-sync.sh <box> [branch]}"
@@ -29,7 +30,7 @@ instabox cp "$work/sync.bundle" "$box:sync.bundle" >/dev/null
 instabox ssh "$box" -- "set -e
   if [ ! -d ~/synara/.git ]; then git clone -q -b '$branch' ~/sync.bundle ~/synara; fi
   cd ~/synara
-  git fetch -q ~/sync.bundle '$branch:refs/remotes/sync/$branch'
-  git checkout -q '$branch' 2>/dev/null || git checkout -q -b '$branch' 'sync/$branch'
+  git fetch -q -f ~/sync.bundle '+$branch:refs/remotes/sync/$branch'
+  git checkout -q -f '$branch' 2>/dev/null || git checkout -q -f -b '$branch' 'sync/$branch'
   git reset -q --hard 'sync/$branch'
   git log --oneline -1"
