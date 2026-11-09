@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 
 use crate::backend::{Backend, BackendEvent};
 use crate::model::{
-    connection_label, plan_list_update, sidebar_rows, thread_error, transcript_rows, ListUpdate,
+    connection_label, plan_list_update, sidebar_rows, thread_banner, transcript_rows, ListUpdate,
     SidebarRow, TranscriptRow,
 };
 
@@ -162,7 +162,7 @@ impl Workspace {
                     (
                         transcript_rows(store),
                         store.is_working(),
-                        store.thread().and_then(thread_error),
+                        store.thread().and_then(thread_banner),
                     )
                 })
             })
