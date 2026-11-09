@@ -155,7 +155,7 @@ Effect RPC (`effect@4.0.0-rc.112`, `RpcSerialization.json`). One JSON value per 
 | S → C     | `{"_tag":"Defect","defect":…}` (connection-wide; fail every pending request)                                            |
 | S → C     | `{"_tag":"Pong"}`                                                                                                       |
 
-Request ids are plain JSON numbers from a per-connection counter. Unary RPCs answer with one `Exit`. Streaming RPCs answer with `Chunk`s and end with an `Exit`; the server waits for the `Ack` before sending the next `Chunk`.
+Request ids come from a per-connection counter and go on the wire as decimal strings (`"1"`): the server's patched Effect build accepts only `bigint | string` ids, and a JSON number gets a `Defect` ("Invalid request id"). The server echoes ids back as strings, so the client decodes both forms. Unary RPCs answer with one `Exit`. Streaming RPCs answer with `Chunk`s and end with an `Exit`; the server waits for the `Ack` before sending the next `Chunk`.
 
 ### 4.2 Codegen
 

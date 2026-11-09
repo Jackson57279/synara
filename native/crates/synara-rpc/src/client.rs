@@ -684,7 +684,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stream.next().await.unwrap().unwrap(), json!("a"));
-        let id = stream.request_id().0;
+        let id = stream.request_id().to_string();
         drop(stream);
         let frames = seen_rx.await.unwrap();
         assert_eq!(

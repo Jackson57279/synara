@@ -9,8 +9,10 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-/// Per-connection request id. Sent as a JSON number; the server echoes it
-/// unchanged, but `RequestId` is `string | number` in Effect so both decode.
+/// Per-connection request id. Sent as a decimal string: the server's Effect
+/// build (`pkg.pr.new` 8881a9b) only accepts `bigint | string` ids, and JSON has
+/// no bigint. Both strings and numbers decode, since Effect echoes whichever form
+/// it holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RequestId(pub u64);
 
@@ -22,7 +24,7 @@ impl fmt::Display for RequestId {
 
 impl Serialize for RequestId {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_u64(self.0)
+        serializer.collect_str(&self.0)
     }
 }
 
@@ -244,14 +246,14 @@ mod tests {
         let request = ClientFrame::request(RequestId(7), "orchestration.subscribeShell", json!({}));
         assert_eq!(
             serde_json::to_value(&request).unwrap(),
-            json!({"_tag":"Request","id":7,"tag":"orchestration.subscribeShell","payload":{},"headers":[]})
+            json!({"_tag":"Request","id":"7","tag":"orchestration.subscribeShell","payload":{},"headers":[]})
         );
         assert_eq!(
             ClientFrame::Ack {
                 request_id: RequestId(7)
             }
             .to_json(),
-            r#"{"_tag":"Ack","requestId":7}"#
+            r#"{"_tag":"Ack","requestId":"7"}"#
         );
         assert_eq!(
             ClientFrame::Interrupt {
@@ -259,7 +261,7 @@ mod tests {
                 interruptors: vec![]
             }
             .to_json(),
-            r#"{"_tag":"Interrupt","requestId":7,"interruptors":[]}"#
+            r#"{"_tag":"Interrupt","requestId":"7","interruptors":[]}"#
         );
         assert_eq!(ClientFrame::Ping.to_json(), r#"{"_tag":"Ping"}"#);
         assert_eq!(ClientFrame::Eof.to_json(), r#"{"_tag":"Eof"}"#);
