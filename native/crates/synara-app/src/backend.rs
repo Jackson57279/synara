@@ -186,6 +186,26 @@ impl Backend {
         });
     }
 
+    pub fn respond_user_input(
+        &self,
+        thread_id: ThreadId,
+        request_id: String,
+        lifecycle_generation: Option<String>,
+        answers: serde_json::Map<String, serde_json::Value>,
+    ) {
+        self.run(move |session, events| async move {
+            let command = ClientCommand::user_input_respond(
+                thread_id,
+                request_id,
+                lifecycle_generation,
+                answers,
+            );
+            if let Err(error) = session.dispatch(&command).await {
+                let _ = events.send(BackendEvent::Notice(format!("Answer failed: {error}")));
+            }
+        });
+    }
+
     pub fn create_thread(&self, project_id: ProjectId, model_selection: ModelSelection) {
         self.run(move |session, events| async move {
             let command = ClientCommand::thread_create(project_id, "", model_selection);

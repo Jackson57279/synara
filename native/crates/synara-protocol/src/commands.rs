@@ -95,6 +95,17 @@ pub enum ClientCommand {
         decision: ApprovalDecision,
         created_at: String,
     },
+    #[serde(rename = "thread.user-input.respond", rename_all = "camelCase")]
+    UserInputRespond {
+        command_id: CommandId,
+        thread_id: ThreadId,
+        request_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        lifecycle_generation: Option<String>,
+        /// `ProviderUserInputAnswers`: question id → string or string list.
+        answers: serde_json::Map<String, Value>,
+        created_at: String,
+    },
     #[serde(rename = "thread.turn.interrupt", rename_all = "camelCase")]
     TurnInterrupt {
         command_id: CommandId,
@@ -189,6 +200,22 @@ impl ClientCommand {
         }
     }
 
+    pub fn user_input_respond(
+        thread_id: ThreadId,
+        request_id: impl Into<String>,
+        lifecycle_generation: Option<String>,
+        answers: serde_json::Map<String, Value>,
+    ) -> Self {
+        Self::UserInputRespond {
+            command_id: CommandId::random(),
+            thread_id,
+            request_id: request_id.into(),
+            lifecycle_generation,
+            answers,
+            created_at: iso_now(),
+        }
+    }
+
     pub fn interrupt(thread_id: ThreadId, turn_id: Option<TurnId>) -> Self {
         Self::TurnInterrupt {
             command_id: CommandId::random(),
@@ -205,6 +232,7 @@ impl ClientCommand {
             | Self::ThreadCreate { command_id, .. }
             | Self::TurnStart { command_id, .. }
             | Self::ApprovalRespond { command_id, .. }
+            | Self::UserInputRespond { command_id, .. }
             | Self::TurnInterrupt { command_id, .. } => command_id,
         }
     }

@@ -7,7 +7,7 @@
 //! stale-callback failures close them; and when the server sent
 //! `pendingInteractions`, only `pending`/`retryable` settlements stay open.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 use synara_protocol::commands::ApprovalDecision;
@@ -94,6 +94,10 @@ fn is_stale_detail(detail: Option<&str>) -> bool {
         "stale pending approval request",
         "unknown pending approval request",
         "unknown pending permission request",
+        "stale pending user-input request",
+        "stale pending user input request",
+        "unknown pending user-input request",
+        "unknown pending user input request",
     ]
     .iter()
     .any(|needle| d.contains(needle))
@@ -110,57 +114,65 @@ fn ordered(activities: &[Activity]) -> Vec<&Activity> {
     sorted
 }
 
-fn actionable(settlements: &[PendingInteraction]) -> HashSet<(String, Option<String>)> {
+fn actionable(settlements: &[PendingInteraction], kind: &str) -> HashSet<(String, Option<String>)> {
     settlements
         .iter()
-        .filter(|s| s.interaction_kind == "approval")
+        .filter(|s| s.interaction_kind == kind)
         .filter(|s| matches!(s.status.as_str(), "pending" | "retryable"))
         .map(|s| (s.request_id.clone(), s.lifecycle_generation.clone()))
         .collect()
 }
 
-pub fn pending_approvals(thread: &Thread) -> Vec<PendingApproval> {
+/// One open request instance found by [`replay`].
+struct Open<T> {
+    request_id: String,
+    lifecycle_generation: Option<String>,
+    created_at: String,
+    value: T,
+}
+
+/// `replayPendingInteractions` for one interaction kind (`approval` or
+/// `userInput`): `parse` turns a requested activity's payload into `T`, or
+/// skips it.
+fn replay<T>(
+    thread: &Thread,
+    kind: &str,
+    requested: &str,
+    resolved: &str,
+    failed: &str,
+    parse: impl Fn(&Value) -> Option<T>,
+) -> Vec<Open<T>> {
     let activities = ordered(&thread.activities);
-    let mut open: Vec<PendingApproval> = Vec::new();
+    let mut open: Vec<Open<T>> = Vec::new();
     for activity in &activities {
         let payload = &activity.payload;
         let Some(request_id) = text(payload, "requestId") else {
             continue;
         };
         let generation = text(payload, "lifecycleGeneration").map(str::to_owned);
-        match activity.kind.as_str() {
-            "approval.requested" => {
-                let Some(kind) = request_kind(payload) else {
-                    continue;
-                };
-                // `replacePendingInteraction`: a new request replaces every
-                // earlier instance of the same id.
-                open.retain(|p| p.request_id != request_id);
-                open.push(PendingApproval {
-                    request_id: request_id.to_owned(),
-                    lifecycle_generation: generation,
-                    request_kind: kind,
-                    created_at: activity.created_at.clone(),
-                    detail: text(payload, "detail").map(str::to_owned),
-                    tool_name: text(payload, "toolName").map(str::to_owned),
-                    session_approval_available: payload
-                        .get("sessionApprovalAvailable")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(true),
-                });
-            }
-            "approval.resolved" => open.retain(|p| {
+        if activity.kind == requested {
+            let Some(value) = parse(payload) else {
+                continue;
+            };
+            // `replacePendingInteraction`: a new request replaces every
+            // earlier instance of the same id.
+            open.retain(|p| p.request_id != request_id);
+            open.push(Open {
+                request_id: request_id.to_owned(),
+                lifecycle_generation: generation,
+                created_at: activity.created_at.clone(),
+                value,
+            });
+        } else if activity.kind == resolved {
+            open.retain(|p| {
                 p.request_id != request_id
                     || (generation.is_some() && p.lifecycle_generation != generation)
-            }),
-            _ => {}
+            });
         }
     }
     // `createStalePendingInteractionMatcher`, applied after replay.
     for activity in &activities {
-        if activity.kind != "provider.approval.respond.failed"
-            || !is_stale_detail(text(&activity.payload, "detail"))
-        {
+        if activity.kind != failed || !is_stale_detail(text(&activity.payload, "detail")) {
             continue;
         }
         let Some(request_id) = text(&activity.payload, "requestId") else {
@@ -168,21 +180,192 @@ pub fn pending_approvals(thread: &Thread) -> Vec<PendingApproval> {
         };
         let generation = text(&activity.payload, "lifecycleGeneration");
         open.retain(|p| {
-            let same = p.request_id == request_id;
             let stale = match (generation, p.lifecycle_generation.as_deref()) {
                 (Some(g), Some(pg)) => g == pg,
                 (None, _) => activity.created_at >= p.created_at,
                 (Some(_), None) => false,
             };
-            !(same && stale)
+            !(p.request_id == request_id && stale)
         });
     }
     if let Some(settlements) = &thread.pending_interactions {
-        let keep = actionable(settlements);
+        let keep = actionable(settlements, kind);
         open.retain(|p| keep.contains(&(p.request_id.clone(), p.lifecycle_generation.clone())));
     }
     open.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     open
+}
+
+pub fn pending_approvals(thread: &Thread) -> Vec<PendingApproval> {
+    replay(
+        thread,
+        "approval",
+        "approval.requested",
+        "approval.resolved",
+        "provider.approval.respond.failed",
+        |payload| {
+            Some((
+                request_kind(payload)?,
+                text(payload, "detail").map(str::to_owned),
+                text(payload, "toolName").map(str::to_owned),
+                payload
+                    .get("sessionApprovalAvailable")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+            ))
+        },
+    )
+    .into_iter()
+    .map(|open| {
+        let (request_kind, detail, tool_name, session_approval_available) = open.value;
+        PendingApproval {
+            request_id: open.request_id,
+            lifecycle_generation: open.lifecycle_generation,
+            request_kind,
+            created_at: open.created_at,
+            detail,
+            tool_name,
+            session_approval_available,
+        }
+    })
+    .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestionOption {
+    pub label: String,
+    pub description: String,
+}
+
+/// `UserInputQuestion`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    pub options: Vec<QuestionOption>,
+    pub multi_select: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUserInput {
+    pub request_id: String,
+    pub lifecycle_generation: Option<String>,
+    pub created_at: String,
+    pub questions: Vec<Question>,
+}
+
+/// `parseUserInputQuestions` in `apps/web/src/workLog.ts`.
+pub fn parse_questions(payload: &Value) -> Option<Vec<Question>> {
+    let raw = payload.get("questions")?.as_array()?;
+    let field = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_owned);
+    let questions: Vec<Question> = raw
+        .iter()
+        .filter_map(|q| {
+            Some(Question {
+                id: field(q, "id")?,
+                header: field(q, "header")?,
+                question: field(q, "question")?,
+                options: q
+                    .get("options")?
+                    .as_array()?
+                    .iter()
+                    .filter_map(|o| {
+                        Some(QuestionOption {
+                            label: field(o, "label")?,
+                            description: field(o, "description")?,
+                        })
+                    })
+                    .collect(),
+                multi_select: q.get("multiSelect").and_then(Value::as_bool) == Some(true),
+            })
+        })
+        .collect();
+    (!questions.is_empty()).then_some(questions)
+}
+
+pub fn pending_user_inputs(thread: &Thread) -> Vec<PendingUserInput> {
+    replay(
+        thread,
+        "userInput",
+        "user-input.requested",
+        "user-input.resolved",
+        "provider.user-input.respond.failed",
+        parse_questions,
+    )
+    .into_iter()
+    .map(|open| PendingUserInput {
+        request_id: open.request_id,
+        lifecycle_generation: open.lifecycle_generation,
+        created_at: open.created_at,
+        questions: open.value,
+    })
+    .collect()
+}
+
+/// A draft answer to one question: picked option labels, or typed text,
+/// which wins (`resolvePendingUserInputAnswer` in
+/// `apps/web/src/pendingUserInput.ts`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DraftAnswer {
+    pub selected: Vec<String>,
+    pub custom: Option<String>,
+}
+
+impl DraftAnswer {
+    /// Picks an option: toggles it for multi-select, replaces otherwise.
+    pub fn pick(&mut self, question: &Question, label: &str) {
+        self.custom = None;
+        if question.multi_select {
+            if let Some(at) = self.selected.iter().position(|l| l == label) {
+                self.selected.remove(at);
+            } else {
+                self.selected.push(label.to_owned());
+            }
+        } else {
+            self.selected = vec![label.to_owned()];
+        }
+    }
+
+    pub fn resolve(&self, question: &Question) -> Option<Value> {
+        if let Some(custom) = self
+            .custom
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(Value::String(custom.to_owned()));
+        }
+        let selected: Vec<&String> = self
+            .selected
+            .iter()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        if question.multi_select {
+            (!selected.is_empty()).then(|| {
+                Value::Array(
+                    selected
+                        .into_iter()
+                        .map(|l| Value::String(l.clone()))
+                        .collect(),
+                )
+            })
+        } else {
+            selected.first().map(|l| Value::String((*l).clone()))
+        }
+    }
+}
+
+/// `buildPendingUserInputAnswers`: answers keyed by question id, or `None`
+/// until every question has one.
+pub fn build_answers(
+    questions: &[Question],
+    drafts: &HashMap<String, DraftAnswer>,
+) -> Option<serde_json::Map<String, Value>> {
+    questions
+        .iter()
+        .map(|q| Some((q.id.clone(), drafts.get(&q.id)?.resolve(q)?)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -233,6 +416,54 @@ mod tests {
         assert_eq!(open[0].request_id, "r2");
         assert_eq!(open[0].prompt(), "Approve this tool call?");
         assert_eq!(open[0].actions().len(), 3);
+    }
+
+    #[test]
+    fn parses_questions_and_builds_answers() {
+        let t = thread(
+            json!([act(
+                "a",
+                "user-input.requested",
+                "1",
+                json!({"requestId": "q1", "questions": [
+                    {"id": "lang", "header": "Language", "question": "Which?", "options": [
+                        {"label": "Rust", "description": "fast"}, {"label": "Go", "description": "simple"}]},
+                    {"id": "tags", "header": "Tags", "question": "Pick some", "multiSelect": true,
+                     "options": [{"label": "a", "description": ""}, {"label": "b", "description": ""}]},
+                    {"id": "broken"}
+                ]})
+            )]),
+            None,
+        );
+        let open = pending_user_inputs(&t);
+        assert_eq!(open.len(), 1);
+        let questions = &open[0].questions;
+        assert_eq!(questions.len(), 2);
+        assert!(questions[1].multi_select);
+
+        let mut drafts: HashMap<String, DraftAnswer> = HashMap::new();
+        drafts
+            .entry("lang".into())
+            .or_default()
+            .pick(&questions[0], "Rust");
+        drafts
+            .entry("lang".into())
+            .or_default()
+            .pick(&questions[0], "Go");
+        assert!(build_answers(questions, &drafts).is_none());
+        let tags = drafts.entry("tags".into()).or_default();
+        tags.pick(&questions[1], "a");
+        tags.pick(&questions[1], "b");
+        tags.pick(&questions[1], "a");
+        let answers = build_answers(questions, &drafts).unwrap();
+        assert_eq!(answers["lang"], json!("Go"));
+        assert_eq!(answers["tags"], json!(["b"]));
+
+        drafts.get_mut("lang").unwrap().custom = Some(" Zig ".into());
+        assert_eq!(
+            build_answers(questions, &drafts).unwrap()["lang"],
+            json!("Zig")
+        );
     }
 
     #[test]

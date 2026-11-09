@@ -2,6 +2,7 @@
 //! transcript, a composer, and a status bar.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui_kit::base::input::{InputEvent, Textarea, TextareaState};
@@ -22,7 +23,10 @@ use crate::model::{
     connection_label, current_project, nth_thread, plan_list_update, sidebar_rows, step_thread,
     thread_banner, transcript_rows, ListUpdate, SidebarRow, TranscriptRow,
 };
-use crate::pending::{pending_approvals, PendingApproval};
+use crate::pending::{
+    build_answers, pending_approvals, pending_user_inputs, DraftAnswer, PendingApproval,
+    PendingUserInput,
+};
 use crate::worklog::{Tone, WorkEntry};
 
 // One action per web command id this window handles; `keymap` maps the
@@ -99,6 +103,12 @@ pub struct Workspace {
     thread_error: Option<String>,
     /// Open approvals for the selected thread, oldest first.
     approvals: Vec<PendingApproval>,
+    /// Open questions for the selected thread, oldest first.
+    user_inputs: Vec<PendingUserInput>,
+    /// Draft answers for the oldest open question set, by question id.
+    drafts: HashMap<String, DraftAnswer>,
+    /// The request `drafts` belongs to.
+    drafts_for: Option<String>,
     /// Request ids answered from here and not yet settled by the server.
     answered: Vec<String>,
     focus: FocusHandle,
@@ -174,6 +184,9 @@ impl Workspace {
             thread_error: None,
             approvals: Vec::new(),
             answered: Vec::new(),
+            user_inputs: Vec::new(),
+            drafts: HashMap::new(),
+            drafts_for: None,
             focus,
             sidebar_visible: true,
             keys_installed: false,
@@ -267,7 +280,7 @@ impl Workspace {
         let Some(thread_id) = self.selected.clone() else {
             return;
         };
-        let (rows, working, error, approvals) = self
+        let (rows, working, error, approvals, user_inputs) = self
             .backend
             .with_session(|session| {
                 let state = session.state();
@@ -277,15 +290,24 @@ impl Workspace {
                         store.is_working(),
                         store.thread().and_then(thread_banner),
                         store.thread().map(pending_approvals).unwrap_or_default(),
+                        store.thread().map(pending_user_inputs).unwrap_or_default(),
                     )
                 })
             })
             .flatten()
             .unwrap_or_default();
         self.thread_error = error;
-        self.answered
-            .retain(|id| approvals.iter().any(|a| &a.request_id == id));
+        self.answered.retain(|id| {
+            approvals.iter().any(|a| &a.request_id == id)
+                || user_inputs.iter().any(|u| &u.request_id == id)
+        });
+        let active = user_inputs.first().map(|u| u.request_id.clone());
+        if active != self.drafts_for {
+            self.drafts.clear();
+            self.drafts_for = active;
+        }
         self.approvals = approvals;
+        self.user_inputs = user_inputs;
         let update = plan_list_update(&self.transcript.borrow(), &rows, reset);
         match update {
             ListUpdate::None => {}
@@ -313,6 +335,25 @@ impl Workspace {
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).value().trim().to_owned();
+        if self.approvals.is_empty() && !self.user_inputs.is_empty() {
+            // While questions are open the composer types the answer to the
+            // first unanswered one, as on the web.
+            if !text.is_empty() {
+                if let Some(input) = self.user_inputs.first() {
+                    let open = input
+                        .questions
+                        .iter()
+                        .find(|q| self.drafts.get(&q.id).and_then(|d| d.resolve(q)).is_none());
+                    if let Some(question) = open.or(input.questions.last()) {
+                        self.drafts.entry(question.id.clone()).or_default().custom = Some(text);
+                    }
+                }
+                self.composer
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+            }
+            self.answer_user_input(cx);
+            return;
+        }
         if text.is_empty() {
             return;
         }
@@ -504,6 +545,172 @@ impl Workspace {
             decision,
         );
         cx.notify();
+    }
+
+    /// Sends the drafts once every question has an answer.
+    fn answer_user_input(&mut self, cx: &mut Context<Self>) {
+        let (Some(thread_id), Some(input)) = (self.selected.clone(), self.user_inputs.first())
+        else {
+            return;
+        };
+        if self.answered.contains(&input.request_id) {
+            return;
+        }
+        if let Some(answers) = build_answers(&input.questions, &self.drafts) {
+            self.answered.push(input.request_id.clone());
+            self.backend.respond_user_input(
+                thread_id,
+                input.request_id.clone(),
+                input.lifecycle_generation.clone(),
+                answers,
+            );
+        }
+        cx.notify();
+    }
+
+    fn pick_option(&mut self, question_ix: usize, label: String, cx: &mut Context<Self>) {
+        let Some(question) = self
+            .user_inputs
+            .first()
+            .and_then(|input| input.questions.get(question_ix))
+            .cloned()
+        else {
+            return;
+        };
+        self.drafts
+            .entry(question.id.clone())
+            .or_default()
+            .pick(&question, &label);
+        // A single question with a single choice sends on the click.
+        let single = self
+            .user_inputs
+            .first()
+            .is_some_and(|input| input.questions.len() == 1 && !question.multi_select);
+        if single {
+            self.answer_user_input(cx);
+        }
+        cx.notify();
+    }
+
+    /// The oldest open question set above the composer
+    /// (`ComposerPendingUserInputPanel` on the web): each question with its
+    /// options as toggles; typed text answers the first unanswered one.
+    fn render_user_input(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let input = self.user_inputs.first()?.clone();
+        let answered = self.answered.contains(&input.request_id);
+        let complete = build_answers(&input.questions, &self.drafts).is_some();
+        let mut card = div()
+            .mx_3()
+            .mb_2()
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(palette::ACCENT))
+            .bg(rgb(palette::USER_BG));
+        for (qix, question) in input.questions.iter().enumerate() {
+            let draft = self.drafts.get(&question.id).cloned().unwrap_or_default();
+            let mut options = div().flex().flex_row().flex_wrap().gap_2();
+            for (oix, option) in question.options.iter().enumerate() {
+                let selected = draft.custom.is_none() && draft.selected.contains(&option.label);
+                let label = option.label.clone();
+                options = options.child(
+                    div()
+                        .id(("question-option", qix * 1000 + oix))
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(if selected {
+                            palette::ACCENT
+                        } else {
+                            palette::BORDER
+                        }))
+                        .when(selected, |chip| chip.text_color(rgb(palette::ACCENT)))
+                        .when(answered, |chip| chip.opacity(0.5))
+                        .when(!answered, |chip| {
+                            chip.cursor_pointer()
+                                .hover(|style| style.bg(rgb(palette::SELECTED)))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    this.pick_option(qix, label.clone(), cx)
+                                }))
+                        })
+                        .child(SharedString::from(option.label.clone()))
+                        .when(!option.description.is_empty(), |chip| {
+                            chip.child(
+                                div()
+                                    .text_color(rgb(palette::MUTED))
+                                    .child(SharedString::from(option.description.clone())),
+                            )
+                        }),
+                );
+            }
+            card = card.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_color(rgb(palette::MUTED))
+                            .child(SharedString::from(question.header.clone())),
+                    )
+                    .child(div().child(SharedString::from(question.question.clone())))
+                    .child(options)
+                    .when_some(draft.custom.clone(), |column, custom| {
+                        column.child(
+                            div()
+                                .text_color(rgb(palette::ACCENT))
+                                .child(SharedString::from(format!("Answer: {custom}"))),
+                        )
+                    }),
+            );
+        }
+        let footer = if answered {
+            div()
+                .text_color(rgb(palette::MUTED))
+                .child("Sending answers…")
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_color(rgb(palette::MUTED))
+                        .child("Pick an option, or type an answer and press Enter."),
+                )
+                .child(
+                    div()
+                        .id("submit-answers")
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(if complete {
+                            palette::ACCENT
+                        } else {
+                            palette::BORDER
+                        }))
+                        .when(!complete, |button| button.opacity(0.5))
+                        .when(complete, |button| {
+                            button
+                                .text_color(rgb(palette::ACCENT))
+                                .cursor_pointer()
+                                .hover(|style| style.bg(rgb(palette::SELECTED)))
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.answer_user_input(cx)
+                                }))
+                        })
+                        .child("Submit"),
+                )
+                .into_any_element()
+        };
+        Some(card.child(footer).into_any_element())
     }
 
     /// The oldest open approval above the composer, as on the web
@@ -847,7 +1054,11 @@ impl Render for Workspace {
                                 .child(SharedString::from(error)),
                         )
                     })
-                    .when_some(self.render_approval(cx), |column, card| column.child(card))
+                    .when_some(
+                        self.render_approval(cx)
+                            .or_else(|| self.render_user_input(cx)),
+                        |column, card| column.child(card),
+                    )
                     .child(
                         div()
                             .p_3()
