@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/synara-protocol",
     "crates/synara-sync",
+    "crates/synara-rpc",
 ]
 # synara-app pulls in GPUI and is built on its own (see native/README.md) so the
 # headless crates stay quick to build and test on machines without GPU libraries.
