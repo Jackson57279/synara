@@ -2,12 +2,6 @@
 resolver = "2"
 members = [
     "crates/synara-protocol",
-    "crates/synara-rpc",
-    "crates/synara-sync",
-    "crates/synara-session",
-    "crates/synara-supervisor",
-    "crates/synara-instabox",
-    "crates/synara-probe",
 ]
 # synara-app pulls in GPUI and is built on its own (see native/README.md) so the
 # headless crates stay quick to build and test on machines without GPU libraries.
