@@ -19,6 +19,8 @@ use synara_rpc::{ClientConfig, RpcClient, RpcStream};
 use synara_sync::{ShellStore, ThreadStatus, ThreadStore};
 use url::Url;
 
+mod session;
+
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
@@ -52,6 +54,15 @@ enum Command {
         #[arg(long, default_value = "gpt-5.5")]
         model: String,
     },
+    /// Drive `synara-session`: create, open, send, force a reconnect, resume.
+    Session {
+        #[arg(long, default_value = "/tmp/synara-probe")]
+        workspace: String,
+        #[arg(long, default_value = "codex")]
+        provider: String,
+        #[arg(long, default_value = "gpt-5.5")]
+        model: String,
+    },
 }
 
 #[tokio::main]
@@ -62,6 +73,14 @@ async fn main() -> Result<()> {
         .init();
     let cli = Cli::parse();
     let step = Duration::from_secs(cli.timeout);
+    if let Command::Session {
+        workspace,
+        provider,
+        model,
+    } = &cli.command
+    {
+        return session::run(&cli, step, workspace, provider, model).await;
+    }
 
     let client = connect(&cli, step).await?;
     let mut shell = ShellStore::new();

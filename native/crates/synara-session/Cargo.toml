@@ -1,0 +1,23 @@
+[package]
+name = "synara-session"
+description = "Connection lifecycle, reconnect, and stream supervision for the Synara native client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+synara-protocol.workspace = true
+synara-rpc.workspace = true
+synara-sync.workspace = true
+reqwest.workspace = true
+rand.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

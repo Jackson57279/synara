@@ -4,6 +4,7 @@ members = [
     "crates/synara-protocol",
     "crates/synara-sync",
     "crates/synara-rpc",
+    "crates/synara-session",
     "crates/synara-probe",
 ]
 # synara-app pulls in GPUI and is built on its own (see native/README.md) so the
